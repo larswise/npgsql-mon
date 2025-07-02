@@ -106,19 +106,33 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
 
         // Draw UI
         terminal.draw(|f| {
-            let chunks = Layout::default()
+            // Create outer padding by using margin constraints
+            let outer_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0)].as_ref())
+                .constraints([
+                    Constraint::Length(1), // Vertical padding reduced by 2/3 (from 3 to 1)
+                    Constraint::Min(0),    // Main content area
+                    Constraint::Length(1), // Vertical padding reduced by 2/3 (from 3 to 1)
+                ].as_ref())
                 .split(f.size());
+
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(2), // Horizontal padding reduced by 1/3 (from 3 to 2)
+                    Constraint::Min(0),    // Main content area
+                    Constraint::Length(2), // Horizontal padding reduced by 1/3 (from 3 to 2)
+                ].as_ref())
+                .split(outer_chunks[1]);
             // Save the height for paging
-            last_list_height = chunks[0].height as usize;
+            last_list_height = chunks[1].height as usize;
 
             // Create inner padding area inside the border
             let inner_area = ratatui::layout::Rect {
-                x: chunks[0].x + 1, // Reduced horizontal padding inside border
-                y: chunks[0].y + 1, // Reduced vertical padding inside border
-                width: chunks[0].width.saturating_sub(2), // Reduce width for padding
-                height: chunks[0].height.saturating_sub(1), // Reduce height for padding
+                x: chunks[1].x + 1, // Reduced horizontal padding inside border
+                y: chunks[1].y + 1, // Reduced vertical padding inside border
+                width: chunks[1].width.saturating_sub(2), // Reduce width for padding
+                height: chunks[1].height.saturating_sub(1), // Reduce height for padding
             };
 
             // Create items for the accordion list with top padding
@@ -143,7 +157,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                         &scroll_offsets,
                         &scroll_cursors,
                         MAX_EXPANDED_HEIGHT,
-                        chunks[0].width.saturating_sub(2) as usize,
+                        chunks[1].width.saturating_sub(2) as usize,
                     )
                 })
                 .collect();
