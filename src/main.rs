@@ -74,9 +74,9 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
     // Scroll state management
     let mut scroll_mode = false;
     let mut scroll_offsets: std::collections::HashMap<usize, usize> =
-        std::collections::HashMap::new();
+        std::collections::HashMap::new(); // Keyed by actual_index
     let mut scroll_cursors: std::collections::HashMap<usize, usize> =
-        std::collections::HashMap::new();
+        std::collections::HashMap::new(); // Keyed by actual_index
 
     // Persistent clipboard to avoid "dropped too quickly" warning
     let mut clipboard = Clipboard::new().ok();
@@ -196,18 +196,18 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                     if selected > 0 {
                                         let actual_index = selected - 1;
                                         let current_cursor =
-                                            scroll_cursors.get(&selected).cloned().unwrap_or(0);
+                                            scroll_cursors.get(&actual_index).cloned().unwrap_or(0);
                                         let current_offset =
-                                            scroll_offsets.get(&selected).cloned().unwrap_or(0);
+                                            scroll_offsets.get(&actual_index).cloned().unwrap_or(0);
 
                                         // Move cursor up if not at the top
                                         if current_cursor > 0 {
                                             let new_cursor = current_cursor - 1;
-                                            scroll_cursors.insert(selected, new_cursor);
+                                            scroll_cursors.insert(actual_index, new_cursor);
 
                                             // Auto-scroll if cursor goes above visible area
                                             if new_cursor < current_offset {
-                                                scroll_offsets.insert(selected, current_offset - 1);
+                                                scroll_offsets.insert(actual_index, current_offset - 1);
                                             }
                                         }
                                     }
@@ -221,9 +221,9 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                         let actual_index = selected - 1;
                                         // Page down (Ctrl+d) - move cursor down by half a page
                                         let current_cursor =
-                                            scroll_cursors.get(&selected).cloned().unwrap_or(0);
+                                            scroll_cursors.get(&actual_index).cloned().unwrap_or(0);
                                         let current_offset =
-                                            scroll_offsets.get(&selected).cloned().unwrap_or(0);
+                                            scroll_offsets.get(&actual_index).cloned().unwrap_or(0);
                                         let page_size = MAX_EXPANDED_HEIGHT / 2; // Half page like vim
 
                                         // Use the same logic as the j/k scrolling to calculate total lines
@@ -324,7 +324,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                                 current_cursor + page_size,
                                                 total_lines.saturating_sub(1),
                                             );
-                                            scroll_cursors.insert(selected, new_cursor);
+                                            scroll_cursors.insert(actual_index, new_cursor);
 
                                             // Auto-scroll if cursor goes beyond visible area
                                             if new_cursor >= current_offset + MAX_EXPANDED_HEIGHT {
@@ -332,7 +332,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                                     current_offset + page_size,
                                                     total_lines.saturating_sub(MAX_EXPANDED_HEIGHT),
                                                 );
-                                                scroll_offsets.insert(selected, new_offset);
+                                                scroll_offsets.insert(actual_index, new_offset);
                                             }
                                         }
                                     }
@@ -346,20 +346,20 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                         let actual_index = selected - 1;
                                         // Page up (Ctrl+u) - move cursor up by half a page
                                         let current_cursor =
-                                            scroll_cursors.get(&selected).cloned().unwrap_or(0);
+                                            scroll_cursors.get(&actual_index).cloned().unwrap_or(0);
                                         let current_offset =
-                                            scroll_offsets.get(&selected).cloned().unwrap_or(0);
+                                            scroll_offsets.get(&actual_index).cloned().unwrap_or(0);
                                         let page_size = MAX_EXPANDED_HEIGHT / 2; // Half page like vim
 
                                         // Move cursor up by half page
                                         let new_cursor = current_cursor.saturating_sub(page_size);
-                                        scroll_cursors.insert(selected, new_cursor);
+                                        scroll_cursors.insert(actual_index, new_cursor);
 
                                         // Auto-scroll if cursor goes above visible area
                                         if new_cursor < current_offset {
                                             let new_offset =
                                                 current_offset.saturating_sub(page_size);
-                                            scroll_offsets.insert(selected, new_offset);
+                                            scroll_offsets.insert(actual_index, new_offset);
                                         }
                                     }
                                 }
@@ -372,7 +372,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                             let line =
                                                 &log_lines[log_lines.len() - 1 - actual_index];
                                             let cursor_pos =
-                                                scroll_cursors.get(&selected).cloned().unwrap_or(0);
+                                                scroll_cursors.get(&actual_index).cloned().unwrap_or(0);
 
                                             let text_to_copy =
                                                 if line.statement.contains("[-- Batch Command") {
@@ -486,8 +486,8 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                         if expanded_items.contains(&actual_index) {
                                             scroll_mode = true;
                                             // Always reset scroll position when entering scroll mode
-                                            scroll_offsets.insert(selected, 0);
-                                            scroll_cursors.insert(selected, 0);
+                                            scroll_offsets.insert(actual_index, 0);
+                                            scroll_cursors.insert(actual_index, 0);
                                         }
                                     }
                                 }
