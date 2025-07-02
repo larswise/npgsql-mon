@@ -19,7 +19,6 @@ use tokio::{
     net::TcpListener,
 };
 
-
 use arboard::Clipboard;
 mod format;
 mod ui;
@@ -70,7 +69,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
     let mut log_lines: Vec<SqlLogMessage> = vec![];
     let mut expanded_items: HashSet<usize> = HashSet::new();
     let mut list_state = ListState::default();
-    list_state.select(Some(0));
+    list_state.select(Some(1)); // Start at index 1 to account for padding line
 
     // Scroll state management
     let mut scroll_mode = false;
@@ -109,21 +108,21 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(0)].as_ref())
                 .split(f.size());
-            
+
             // Create inner padding area inside the border
             let inner_area = ratatui::layout::Rect {
-                x: chunks[0].x + 3,      // Add horizontal padding inside border
-                y: chunks[0].y + 2,      // Add vertical padding inside border (below the top border)
-                width: chunks[0].width.saturating_sub(6),  // Reduce width for padding
+                x: chunks[0].x + 3,                         // Add horizontal padding inside border
+                y: chunks[0].y + 2, // Add vertical padding inside border (below the top border)
+                width: chunks[0].width.saturating_sub(6), // Reduce width for padding
                 height: chunks[0].height.saturating_sub(3), // Reduce height for padding
             };
 
             // Create items for the accordion list with top padding
             let mut items: Vec<ListItem> = vec![
                 // Add empty line for top padding inside the border
-                ListItem::new(vec![Line::from("")])
+                ListItem::new(vec![Line::from("")]),
             ];
-            
+
             // Add the actual accordion items
             let accordion_items: Vec<ListItem> = log_lines
                 .iter()
@@ -144,7 +143,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                     )
                 })
                 .collect();
-            
+
             items.extend(accordion_items);
 
             let log_list = List::new(items)
@@ -169,95 +168,115 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                 if key_event.kind == KeyEventKind::Press {
                     let key = key_event;
                     if scroll_mode {
-                    // Handle scroll mode keys
-                    match key.code {
-                        KeyCode::Char('q') => break,
-                        KeyCode::Char('h') => {
-                            scroll_mode = false;
-                        }
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            ui::handle_down(
-                                &log_lines,
-                                &list_state,
-                                &mut scroll_offsets,
-                                &mut scroll_cursors,
-                            );
-                        }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            if let Some(selected) = list_state.selected() {
-                                let current_cursor =
-                                    scroll_cursors.get(&selected).cloned().unwrap_or(0);
-                                let current_offset =
-                                    scroll_offsets.get(&selected).cloned().unwrap_or(0);
+                        // Handle scroll mode keys
+                        match key.code {
+                            KeyCode::Char('q') => break,
+                            KeyCode::Char('h') => {
+                                scroll_mode = false;
+                            }
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                ui::handle_down(
+                                    &log_lines,
+                                    &list_state,
+                                    &mut scroll_offsets,
+                                    &mut scroll_cursors,
+                                );
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                if let Some(selected) = list_state.selected() {
+                                    let current_cursor =
+                                        scroll_cursors.get(&selected).cloned().unwrap_or(0);
+                                    let current_offset =
+                                        scroll_offsets.get(&selected).cloned().unwrap_or(0);
 
-                                // Move cursor up if not at the top
-                                if current_cursor > 0 {
-                                    let new_cursor = current_cursor - 1;
-                                    scroll_cursors.insert(selected, new_cursor);
+                                    // Move cursor up if not at the top
+                                    if current_cursor > 0 {
+                                        let new_cursor = current_cursor - 1;
+                                        scroll_cursors.insert(selected, new_cursor);
 
-                                    // Auto-scroll if cursor goes above visible area
-                                    if new_cursor < current_offset {
-                                        scroll_offsets.insert(selected, current_offset - 1);
+                                        // Auto-scroll if cursor goes above visible area
+                                        if new_cursor < current_offset {
+                                            scroll_offsets.insert(selected, current_offset - 1);
+                                        }
                                     }
                                 }
                             }
-                        }
-                        KeyCode::Char('d')
-                            if key.modifiers == crossterm::event::KeyModifiers::CONTROL =>
-                        {
-                            // Page down (Ctrl+d) - move cursor down by half a page
-                            if let Some(selected) = list_state.selected() {
-                                let current_cursor =
-                                    scroll_cursors.get(&selected).cloned().unwrap_or(0);
-                                let current_offset =
-                                    scroll_offsets.get(&selected).cloned().unwrap_or(0);
-                                let page_size = MAX_EXPANDED_HEIGHT / 2; // Half page like vim
+                            KeyCode::Char('d')
+                                if key.modifiers == crossterm::event::KeyModifiers::CONTROL =>
+                            {
+                                // Page down (Ctrl+d) - move cursor down by half a page
+                                if let Some(selected) = list_state.selected() {
+                                    let current_cursor =
+                                        scroll_cursors.get(&selected).cloned().unwrap_or(0);
+                                    let current_offset =
+                                        scroll_offsets.get(&selected).cloned().unwrap_or(0);
+                                    let page_size = MAX_EXPANDED_HEIGHT / 2; // Half page like vim
 
-                                // Use the same logic as the j/k scrolling to calculate total lines
-                                if selected < log_lines.len() {
-                                    let line = &log_lines[log_lines.len() - 1 - selected];
-                                    let mut total_lines = 0;
+                                    // Use the same logic as the j/k scrolling to calculate total lines
+                                    if selected < log_lines.len() {
+                                        let line = &log_lines[log_lines.len() - 1 - selected];
+                                        let mut total_lines = 0;
 
-                                    if line.statement.contains("[-- Batch Command") {
-                                        // Count batch processing lines
-                                        let mut current_batch_sql = String::new();
-                                        for statement_line in line.statement.lines() {
-                                            if statement_line.starts_with("[-- Batch Command") {
-                                                if !current_batch_sql.trim().is_empty() {
-                                                    total_lines += 1; // batch header
-                                                    let format_options = FormatOptions {
-                                                        indent: sqlformat::Indent::Spaces(2),
-                                                        uppercase: Some(false),
-                                                        lines_between_queries: 1,
-                                                        ignore_case_convert: Some(vec![]),
-                                                    };
-                                                    let formatted_sql = format(
-                                                        &current_batch_sql.trim(),
-                                                        &QueryParams::None,
-                                                        &format_options,
-                                                    );
-                                                    if formatted_sql.trim().is_empty() {
-                                                        total_lines += current_batch_sql
-                                                            .lines()
-                                                            .count()
-                                                            .max(1);
-                                                    } else {
-                                                        total_lines +=
-                                                            formatted_sql.lines().count();
+                                        if line.statement.contains("[-- Batch Command") {
+                                            // Count batch processing lines
+                                            let mut current_batch_sql = String::new();
+                                            for statement_line in line.statement.lines() {
+                                                if statement_line.starts_with("[-- Batch Command") {
+                                                    if !current_batch_sql.trim().is_empty() {
+                                                        total_lines += 1; // batch header
+                                                        let format_options = FormatOptions {
+                                                            indent: sqlformat::Indent::Spaces(2),
+                                                            uppercase: Some(false),
+                                                            lines_between_queries: 1,
+                                                            ignore_case_convert: Some(vec![]),
+                                                        };
+                                                        let formatted_sql = format(
+                                                            &current_batch_sql.trim(),
+                                                            &QueryParams::None,
+                                                            &format_options,
+                                                        );
+                                                        if formatted_sql.trim().is_empty() {
+                                                            total_lines += current_batch_sql
+                                                                .lines()
+                                                                .count()
+                                                                .max(1);
+                                                        } else {
+                                                            total_lines +=
+                                                                formatted_sql.lines().count();
+                                                        }
+                                                        total_lines += 1; // separator
                                                     }
-                                                    total_lines += 1; // separator
+                                                    current_batch_sql.clear();
+                                                } else {
+                                                    if !current_batch_sql.is_empty() {
+                                                        current_batch_sql.push('\n');
+                                                    }
+                                                    current_batch_sql.push_str(statement_line);
                                                 }
-                                                current_batch_sql.clear();
-                                            } else {
-                                                if !current_batch_sql.is_empty() {
-                                                    current_batch_sql.push('\n');
-                                                }
-                                                current_batch_sql.push_str(statement_line);
                                             }
-                                        }
-                                        // Final batch
-                                        if !current_batch_sql.trim().is_empty() {
-                                            total_lines += 1; // batch header
+                                            // Final batch
+                                            if !current_batch_sql.trim().is_empty() {
+                                                total_lines += 1; // batch header
+                                                let format_options = FormatOptions {
+                                                    indent: sqlformat::Indent::Spaces(2),
+                                                    uppercase: Some(false),
+                                                    lines_between_queries: 1,
+                                                    ignore_case_convert: Some(vec![]),
+                                                };
+                                                let formatted_sql = format(
+                                                    &current_batch_sql.trim(),
+                                                    &QueryParams::None,
+                                                    &format_options,
+                                                );
+                                                if formatted_sql.trim().is_empty() {
+                                                    total_lines +=
+                                                        current_batch_sql.lines().count().max(1);
+                                                } else {
+                                                    total_lines += formatted_sql.lines().count();
+                                                }
+                                            }
+                                        } else {
+                                            // Regular statement
                                             let format_options = FormatOptions {
                                                 indent: sqlformat::Indent::Spaces(2),
                                                 uppercase: Some(false),
@@ -265,170 +284,161 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                                 ignore_case_convert: Some(vec![]),
                                             };
                                             let formatted_sql = format(
-                                                &current_batch_sql.trim(),
+                                                &line.statement,
                                                 &QueryParams::None,
                                                 &format_options,
                                             );
                                             if formatted_sql.trim().is_empty() {
                                                 total_lines +=
-                                                    current_batch_sql.lines().count().max(1);
+                                                    line.statement.lines().count().max(1);
                                             } else {
                                                 total_lines += formatted_sql.lines().count();
                                             }
+                                            total_lines += 1; // end statement marker
                                         }
-                                    } else {
-                                        // Regular statement
-                                        let format_options = FormatOptions {
-                                            indent: sqlformat::Indent::Spaces(2),
-                                            uppercase: Some(false),
-                                            lines_between_queries: 1,
-                                            ignore_case_convert: Some(vec![]),
-                                        };
-                                        let formatted_sql = format(
-                                            &line.statement,
-                                            &QueryParams::None,
-                                            &format_options,
-                                        );
-                                        if formatted_sql.trim().is_empty() {
-                                            total_lines += line.statement.lines().count().max(1);
-                                        } else {
-                                            total_lines += formatted_sql.lines().count();
-                                        }
-                                        total_lines += 1; // end statement marker
-                                    }
 
-                                    // Move cursor down by half page
-                                    let new_cursor = std::cmp::min(
-                                        current_cursor + page_size,
-                                        total_lines.saturating_sub(1),
-                                    );
+                                        // Move cursor down by half page
+                                        let new_cursor = std::cmp::min(
+                                            current_cursor + page_size,
+                                            total_lines.saturating_sub(1),
+                                        );
+                                        scroll_cursors.insert(selected, new_cursor);
+
+                                        // Auto-scroll if cursor goes beyond visible area
+                                        if new_cursor >= current_offset + MAX_EXPANDED_HEIGHT {
+                                            let new_offset = std::cmp::min(
+                                                current_offset + page_size,
+                                                total_lines.saturating_sub(MAX_EXPANDED_HEIGHT),
+                                            );
+                                            scroll_offsets.insert(selected, new_offset);
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Char('u')
+                                if key.modifiers == crossterm::event::KeyModifiers::CONTROL =>
+                            {
+                                // Page up (Ctrl+u) - move cursor up by half a page
+                                if let Some(selected) = list_state.selected() {
+                                    let current_cursor =
+                                        scroll_cursors.get(&selected).cloned().unwrap_or(0);
+                                    let current_offset =
+                                        scroll_offsets.get(&selected).cloned().unwrap_or(0);
+                                    let page_size = MAX_EXPANDED_HEIGHT / 2; // Half page like vim
+
+                                    // Move cursor up by half page
+                                    let new_cursor = current_cursor.saturating_sub(page_size);
                                     scroll_cursors.insert(selected, new_cursor);
 
-                                    // Auto-scroll if cursor goes beyond visible area
-                                    if new_cursor >= current_offset + MAX_EXPANDED_HEIGHT {
-                                        let new_offset = std::cmp::min(
-                                            current_offset + page_size,
-                                            total_lines.saturating_sub(MAX_EXPANDED_HEIGHT),
-                                        );
+                                    // Auto-scroll if cursor goes above visible area
+                                    if new_cursor < current_offset {
+                                        let new_offset = current_offset.saturating_sub(page_size);
                                         scroll_offsets.insert(selected, new_offset);
                                     }
                                 }
                             }
-                        }
-                        KeyCode::Char('u')
-                            if key.modifiers == crossterm::event::KeyModifiers::CONTROL =>
-                        {
-                            // Page up (Ctrl+u) - move cursor up by half a page
-                            if let Some(selected) = list_state.selected() {
-                                let current_cursor =
-                                    scroll_cursors.get(&selected).cloned().unwrap_or(0);
-                                let current_offset =
-                                    scroll_offsets.get(&selected).cloned().unwrap_or(0);
-                                let page_size = MAX_EXPANDED_HEIGHT / 2; // Half page like vim
+                            KeyCode::Char('y') => {
+                                // Copy to clipboard - copy the full statement or the specific batch statement
+                                if let Some(selected) = list_state.selected() {
+                                    if selected < log_lines.len() {
+                                        let line = &log_lines[log_lines.len() - 1 - selected];
+                                        let cursor_pos =
+                                            scroll_cursors.get(&selected).cloned().unwrap_or(0);
 
-                                // Move cursor up by half page
-                                let new_cursor = current_cursor.saturating_sub(page_size);
-                                scroll_cursors.insert(selected, new_cursor);
-
-                                // Auto-scroll if cursor goes above visible area
-                                if new_cursor < current_offset {
-                                    let new_offset = current_offset.saturating_sub(page_size);
-                                    scroll_offsets.insert(selected, new_offset);
-                                }
-                            }
-                        }
-                        KeyCode::Char('y') => {
-                            // Copy to clipboard - copy the full statement or the specific batch statement
-                            if let Some(selected) = list_state.selected() {
-                                if selected < log_lines.len() {
-                                    let line = &log_lines[log_lines.len() - 1 - selected];
-                                    let cursor_pos =
-                                        scroll_cursors.get(&selected).cloned().unwrap_or(0);
-
-                                    let text_to_copy =
-                                        if line.statement.contains("[-- Batch Command") {
-                                            // For batch statements, copy the specific statement the cursor is on
-                                            format::extract_batch_statement_at_cursor(
-                                                &line.statement,
-                                                cursor_pos,
-                                            )
-                                        } else {
-                                            // For regular statements, copy the formatted SQL
-                                            let format_options = FormatOptions {
-                                                indent: sqlformat::Indent::Spaces(2),
-                                                uppercase: Some(false),
-                                                lines_between_queries: 1,
-                                                ignore_case_convert: Some(vec![]),
-                                            };
-                                            let formatted_sql = format(
-                                                &line.statement,
-                                                &QueryParams::None,
-                                                &format_options,
-                                            );
-                                            if formatted_sql.trim().is_empty() {
-                                                line.statement.clone() // fallback to original
+                                        let text_to_copy =
+                                            if line.statement.contains("[-- Batch Command") {
+                                                // For batch statements, copy the specific statement the cursor is on
+                                                format::extract_batch_statement_at_cursor(
+                                                    &line.statement,
+                                                    cursor_pos,
+                                                )
                                             } else {
-                                                formatted_sql
-                                            }
-                                        };
+                                                // For regular statements, copy the formatted SQL
+                                                let format_options = FormatOptions {
+                                                    indent: sqlformat::Indent::Spaces(2),
+                                                    uppercase: Some(false),
+                                                    lines_between_queries: 1,
+                                                    ignore_case_convert: Some(vec![]),
+                                                };
+                                                let formatted_sql = format(
+                                                    &line.statement,
+                                                    &QueryParams::None,
+                                                    &format_options,
+                                                );
+                                                if formatted_sql.trim().is_empty() {
+                                                    line.statement.clone() // fallback to original
+                                                } else {
+                                                    formatted_sql
+                                                }
+                                            };
 
-                                    // Copy to clipboard using persistent clipboard
-                                    if let Some(ref mut cb) = clipboard {
-                                        if cb.set_text(text_to_copy).is_ok() {
-                                            // Set flash feedback state
-                                            copy_flash_state =
-                                                Some((selected, std::time::Instant::now()));
+                                        // Copy to clipboard using persistent clipboard
+                                        if let Some(ref mut cb) = clipboard {
+                                            if cb.set_text(text_to_copy).is_ok() {
+                                                // Set flash feedback state
+                                                copy_flash_state =
+                                                    Some((selected, std::time::Instant::now()));
+                                            }
                                         }
                                     }
                                 }
                             }
+                            _ => {}
                         }
-                        _ => {}
+                    } else {
+                        // Handle normal accordion navigation
+                        match key.code {
+                            KeyCode::Char('q') => break,
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                if let Some(selected) = list_state.selected() {
+                                    if selected > 1 {
+                                        // Skip the padding line at index 0
+                                        list_state.select(Some(selected - 1));
+                                    }
+                                }
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if let Some(selected) = list_state.selected() {
+                                    if selected < log_lines.len() {
+                                        // Account for padding line
+                                        list_state.select(Some(selected + 1));
+                                    }
+                                } else if !log_lines.is_empty() {
+                                    list_state.select(Some(1)); // Start at index 1 (first actual item)
+                                }
+                            }
+                            KeyCode::Enter => {
+                                if let Some(selected) = list_state.selected() {
+                                    if selected > 0 {
+                                        // Skip padding line
+                                        let actual_index = selected - 1; // Convert to actual log index
+                                        if expanded_items.contains(&actual_index) {
+                                            // Collapse the accordion
+                                            expanded_items.remove(&actual_index);
+                                        } else {
+                                            // Expand the accordion
+                                            expanded_items.insert(actual_index);
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Char('l') => {
+                                if let Some(selected) = list_state.selected() {
+                                    if selected > 0 {
+                                        // Skip padding line
+                                        let actual_index = selected - 1; // Convert to actual log index
+                                        if expanded_items.contains(&actual_index) {
+                                            // Simply enter scroll mode for any expanded item
+                                            scroll_mode = true;
+                                            scroll_offsets.insert(actual_index, 0);
+                                            scroll_cursors.insert(actual_index, 0); // Start cursor at first line
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
                     }
-                } else {
-                    // Handle normal accordion navigation
-                    match key.code {
-                        KeyCode::Char('q') => break,
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            if let Some(selected) = list_state.selected() {
-                                if selected > 0 {
-                                    list_state.select(Some(selected - 1));
-                                }
-                            }
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            if let Some(selected) = list_state.selected() {
-                                if selected < log_lines.len().saturating_sub(1) {
-                                    list_state.select(Some(selected + 1));
-                                }
-                            } else if !log_lines.is_empty() {
-                                list_state.select(Some(0));
-                            }
-                        }
-                        KeyCode::Enter => {
-                            if let Some(selected) = list_state.selected() {
-                                if expanded_items.contains(&selected) {
-                                    // Collapse the accordion
-                                    expanded_items.remove(&selected);
-                                } else {
-                                    // Expand the accordion
-                                    expanded_items.insert(selected);
-                                }
-                            }
-                        }
-                        KeyCode::Char('l') => {
-                            if let Some(selected) = list_state.selected() {
-                                if expanded_items.contains(&selected) {
-                                    // Simply enter scroll mode for any expanded item
-                                    scroll_mode = true;
-                                    scroll_offsets.insert(selected, 0);
-                                    scroll_cursors.insert(selected, 0); // Start cursor at first line
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
                 }
             }
         }
@@ -475,7 +485,6 @@ fn interpolate_color(ms: u64) -> (u8, u8, u8) {
         red
     }
 }
-
 
 fn get_http_method_color(method: &str) -> Color {
     match method.to_uppercase().as_str() {
