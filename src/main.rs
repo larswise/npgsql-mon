@@ -18,7 +18,6 @@ use tokio::{
     net::TcpListener,
 };
 
-use syntect::highlighting::Style as SynStyle;
 
 use arboard::Clipboard;
 mod format;
@@ -145,8 +144,12 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
 
         // Handle keyboard events
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if scroll_mode {
+            if let Event::Key(key_event) = event::read()? {
+                use crossterm::event::KeyEventKind;
+                // Only process key press events, not releases or repeats
+                if key_event.kind == KeyEventKind::Press {
+                    let key = key_event;
+                    if scroll_mode {
                     // Handle scroll mode keys
                     match key.code {
                         KeyCode::Char('q') => break,
@@ -407,6 +410,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                         _ => {}
                     }
                 }
+                }
             }
         }
     }
@@ -453,21 +457,6 @@ fn interpolate_color(ms: u64) -> (u8, u8, u8) {
     }
 }
 
-fn syn_style_to_ratatui(span: SynStyle) -> Style {
-    let (r, g, b) = (span.foreground.r, span.foreground.g, span.foreground.b);
-
-    // Check if the color is grey-ish and convert to beige
-    let is_grey = r == g && g == b && r > 100 && r < 180; // Grey tones between 100-180
-    let is_dark_grey =
-        (r as i32 - g as i32).abs() < 20 && (g as i32 - b as i32).abs() < 20 && r > 80 && r < 140; // Allow slight variations in grey
-
-    if is_grey || is_dark_grey {
-        // Convert to beige: warm, light brown color
-        Style::default().fg(Color::Rgb(245, 222, 179)) // Wheat/beige color
-    } else {
-        Style::default().fg(Color::Rgb(r, g, b))
-    }
-}
 
 fn get_http_method_color(method: &str) -> Color {
     match method.to_uppercase().as_str() {

@@ -2,7 +2,7 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span, Text},
 };
-use sqlformat::{FormatOptions, QueryParams};
+use sqlformat::{FormatOptions, QueryParams, format as sql_format};
 use syntect::{
     easy::HighlightLines,
     highlighting::{Style as SynStyle, ThemeSet},
@@ -10,7 +10,6 @@ use syntect::{
     util::LinesWithEndings,
 };
 
-use crate::format;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlSizeClass {
@@ -74,7 +73,6 @@ pub fn highlight_sql(sql: String) -> Text<'static> {
 
 pub fn extract_batch_statement_at_cursor(statement: &str, cursor_pos: usize) -> String {
     // Parse batch statements and find which one the cursor is positioned on
-    let mut copy_flash_state: Option<(usize, std::time::Instant)> = None;
     let mut current_batch_sql = String::new();
     let mut batch_statements = Vec::new();
     let mut line_count = 0;
@@ -91,7 +89,7 @@ pub fn extract_batch_statement_at_cursor(statement: &str, cursor_pos: usize) -> 
                     lines_between_queries: 1,
                     ignore_case_convert: Some(vec![]),
                 };
-                let formatted_sql = format::format(
+                let formatted_sql = sql_format(
                     &current_batch_sql.trim(),
                     &QueryParams::None,
                     &format_options,
@@ -127,7 +125,7 @@ pub fn extract_batch_statement_at_cursor(statement: &str, cursor_pos: usize) -> 
             lines_between_queries: 1,
             ignore_case_convert: Some(vec![]),
         };
-        let formatted_sql = format(&batch_sql.trim(), &QueryParams::None, &format_options);
+        let formatted_sql = sql_format(&batch_sql.trim(), &QueryParams::None, &format_options);
 
         let batch_line_count = if formatted_sql.trim().is_empty() {
             batch_sql.lines().count().max(1)
