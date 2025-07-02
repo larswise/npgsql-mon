@@ -401,6 +401,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
 
                                             if let Some(ref mut cb) = clipboard {
                                                 if cb.set_text(text_to_copy).is_ok() {
+                                                    // Flash the indicator on the correct item (actual_index + 1)
                                                     copy_flash_state =
                                                         Some((selected, std::time::Instant::now()));
                                                 }
@@ -481,12 +482,12 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                             KeyCode::Char('l') => {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 0 {
-                                        // Only enter scroll mode if the selected item is expanded
                                         let actual_index = selected - 1;
                                         if expanded_items.contains(&actual_index) {
                                             scroll_mode = true;
-                                            scroll_offsets.insert(actual_index, 0);
-                                            scroll_cursors.insert(actual_index, 0);
+                                            // Always reset scroll position when entering scroll mode
+                                            scroll_offsets.insert(selected, 0);
+                                            scroll_cursors.insert(selected, 0);
                                         }
                                     }
                                 }
