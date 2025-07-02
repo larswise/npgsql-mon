@@ -85,6 +85,8 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
     let mut copy_flash_state: Option<(usize, std::time::Instant)> = None;
     const COPY_FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
 
+    // Track the last known list height for paging
+    let mut last_list_height = 10usize;
     loop {
         // Check for new logs
         while let Ok(line) = rx.try_recv() {
@@ -108,10 +110,12 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(0)].as_ref())
                 .split(f.size());
+            // Save the height for paging
+            last_list_height = chunks[0].height as usize;
 
             // Create inner padding area inside the border
             let inner_area = ratatui::layout::Rect {
-                x: chunks[0].x + 1,                         // Reduced horizontal padding inside border
+                x: chunks[0].x + 1, // Reduced horizontal padding inside border
                 y: chunks[0].y + 1, // Reduced vertical padding inside border
                 width: chunks[0].width.saturating_sub(2), // Reduce width for padding
                 height: chunks[0].height.saturating_sub(1), // Reduce height for padding
@@ -405,6 +409,36 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                     }
                                 } else if !log_lines.is_empty() {
                                     list_state.select(Some(1)); // Start at index 1 (first actual item)
+                                }
+                            }
+                            KeyCode::Char('d')
+                                if key.modifiers == crossterm::event::KeyModifiers::CONTROL =>
+                            {
+                                // Page down (Ctrl+d) - move selection down by half a page
+                                if let Some(selected) = list_state.selected() {
+                                    let page_size =
+                                        (last_list_height.saturating_sub(2) / 2) as usize; // half page, minus padding
+                                    let max_index = log_lines.len();
+                                    let new_selected =
+                                        std::cmp::min(selected + page_size, max_index);
+                                    if new_selected > 0 && new_selected <= max_index {
+                                        list_state.select(Some(new_selected));
+                                    }
+                                }
+                            }
+                            KeyCode::Char('u')
+                                if key.modifiers == crossterm::event::KeyModifiers::CONTROL =>
+                            {
+                                // Page up (Ctrl+u) - move selection up by half a page
+                                if let Some(selected) = list_state.selected() {
+                                    let page_size =
+                                        (last_list_height.saturating_sub(2) / 2) as usize; // half page, minus padding
+                                    let new_selected = selected.saturating_sub(page_size);
+                                    if new_selected > 0 {
+                                        list_state.select(Some(new_selected));
+                                    } else {
+                                        list_state.select(Some(1)); // Don't go above first item
+                                    }
                                 }
                             }
                             KeyCode::Enter => {
