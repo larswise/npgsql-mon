@@ -104,21 +104,18 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
 
         // Draw UI
         terminal.draw(|f| {
-            // Add outer padding: more vertical padding, some horizontal padding
-            let outer_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(2), Constraint::Min(0), Constraint::Length(2)].as_ref())
-                .split(f.size());
-            
-            let inner_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(4), Constraint::Min(0), Constraint::Length(4)].as_ref())
-                .split(outer_chunks[1]);
-            
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(0)].as_ref())
-                .split(inner_chunks[1]);
+                .split(f.size());
+            
+            // Create inner padding area inside the border
+            let inner_area = ratatui::layout::Rect {
+                x: chunks[0].x + 2,      // Add horizontal padding inside border
+                y: chunks[0].y + 2,      // Add vertical padding inside border  
+                width: chunks[0].width.saturating_sub(4),  // Reduce width for padding
+                height: chunks[0].height.saturating_sub(3), // Reduce height for padding
+            };
 
             // Create items for the accordion list
             let items: Vec<ListItem> = log_lines
@@ -152,7 +149,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                 .highlight_style(Style::default())
                 .highlight_symbol("► ");
 
-            f.render_stateful_widget(log_list, chunks[0], &mut list_state);
+            f.render_stateful_widget(log_list, inner_area, &mut list_state);
         })?;
 
         // Handle keyboard events
