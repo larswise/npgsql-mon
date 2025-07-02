@@ -403,7 +403,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                                 if cb.set_text(text_to_copy).is_ok() {
                                                     // Flash the indicator on the correct item (actual_index + 1)
                                                     copy_flash_state =
-                                                        Some((selected, std::time::Instant::now()));
+                                                        Some((actual_index + 1, std::time::Instant::now()));
                                                 }
                                             }
                                         }
