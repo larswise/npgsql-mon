@@ -121,7 +121,7 @@ pub fn render_accordion_item(
     let flash_fg = ratatui::style::Color::Rgb(0, 0, 0);
     let formatted_duration = crate::format_duration(line.duration);
     let is_expanded = expanded_items.contains(&index);
-    let arrow = if is_expanded { "▼" } else { "▶" };
+    let arrow = if is_expanded { "▼" } else { "►" };
     let mut lines = vec![];
     if is_expanded {
         let endpoint_str = line.endpoint.clone().unwrap_or("N/A".to_string());
