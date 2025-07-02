@@ -207,7 +207,8 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
 
                                             // Auto-scroll if cursor goes above visible area
                                             if new_cursor < current_offset {
-                                                scroll_offsets.insert(actual_index, current_offset - 1);
+                                                scroll_offsets
+                                                    .insert(actual_index, current_offset - 1);
                                             }
                                         }
                                     }
@@ -371,8 +372,10 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                         if actual_index < log_lines.len() {
                                             let line =
                                                 &log_lines[log_lines.len() - 1 - actual_index];
-                                            let cursor_pos =
-                                                scroll_cursors.get(&actual_index).cloned().unwrap_or(0);
+                                            let cursor_pos = scroll_cursors
+                                                .get(&actual_index)
+                                                .cloned()
+                                                .unwrap_or(0);
 
                                             let text_to_copy =
                                                 if line.statement.contains("[-- Batch Command") {
@@ -401,7 +404,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
 
                                             if let Some(ref mut cb) = clipboard {
                                                 if cb.set_text(text_to_copy).is_ok() {
-                                                    // Flash the indicator on the correct item (actual_index + 1)
+                                                    // Flash the indicator on the correct item (selected)
                                                     copy_flash_state =
                                                         Some((selected, std::time::Instant::now()));
                                                 }
