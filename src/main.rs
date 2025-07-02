@@ -8,6 +8,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
+    text::Line,
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
@@ -117,8 +118,14 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                 height: chunks[0].height.saturating_sub(3), // Reduce height for padding
             };
 
-            // Create items for the accordion list
-            let items: Vec<ListItem> = log_lines
+            // Create items for the accordion list with top padding
+            let mut items: Vec<ListItem> = vec![
+                // Add empty line for top padding inside the border
+                ListItem::new(vec![Line::from("")])
+            ];
+            
+            // Add the actual accordion items
+            let accordion_items: Vec<ListItem> = log_lines
                 .iter()
                 .rev()
                 .enumerate()
@@ -137,6 +144,8 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                     )
                 })
                 .collect();
+            
+            items.extend(accordion_items);
 
             let log_list = List::new(items)
                 .block(
