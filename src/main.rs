@@ -104,10 +104,21 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
 
         // Draw UI
         terminal.draw(|f| {
+            // Add outer padding: more horizontal, some top padding
+            let outer_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)].as_ref())
+                .split(f.size());
+            
+            let inner_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(2), Constraint::Min(0), Constraint::Length(2)].as_ref())
+                .split(outer_chunks[1]);
+            
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(0)].as_ref())
-                .split(f.size());
+                .split(inner_chunks[1]);
 
             // Create items for the accordion list
             let items: Vec<ListItem> = log_lines
@@ -134,7 +145,9 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title("Live SQL Logs"),
+                        .border_style(Style::default().fg(Color::Rgb(0, 149, 255))) // #0095ff
+                        .title("Npgsql monitor")
+                        .title_style(Style::default().fg(Color::White)),
                 )
                 .highlight_style(Style::default())
                 .highlight_symbol("► ");
