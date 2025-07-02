@@ -111,10 +111,10 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
 
             // Create inner padding area inside the border
             let inner_area = ratatui::layout::Rect {
-                x: chunks[0].x + 3,                         // Add horizontal padding inside border
-                y: chunks[0].y + 2, // Add vertical padding inside border (below the top border)
-                width: chunks[0].width.saturating_sub(6), // Reduce width for padding
-                height: chunks[0].height.saturating_sub(3), // Reduce height for padding
+                x: chunks[0].x + 1,                         // Reduced horizontal padding inside border
+                y: chunks[0].y + 1, // Reduced vertical padding inside border
+                width: chunks[0].width.saturating_sub(2), // Reduce width for padding
+                height: chunks[0].height.saturating_sub(1), // Reduce height for padding
             };
 
             // Create items for the accordion list with top padding
