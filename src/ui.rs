@@ -210,7 +210,7 @@ pub fn render_accordion_item(
         let scroll_offset = scroll_offsets.get(&index).cloned().unwrap_or(0);
         let total_content_lines = all_content_lines.len();
         if total_content_lines > max_expanded_height {
-            let scroll_info = if scroll_mode && list_state.selected() == Some(index) {
+            let scroll_info = if scroll_mode && list_state.selected() == Some(index + 1) {
                 format!(
                     "SCROLL MODE: Line {}/{} (j/k to scroll, h to exit)",
                     scroll_offset + 1,
@@ -239,7 +239,7 @@ pub fn render_accordion_item(
         {
             let absolute_line_index = scroll_offset + content_index;
             if scroll_mode
-                && list_state.selected() == Some(index)
+                && list_state.selected() == Some(index + 1)
                 && absolute_line_index == cursor_pos
             {
                 let cursor_line = match content_line {
@@ -383,95 +383,100 @@ pub fn handle_down(
     scroll_cursors: &mut std::collections::HashMap<usize, usize>,
 ) {
     if let Some(selected) = list_state.selected() {
-        // We need to recalculate the actual content lines for accurate scrolling
-        if selected < log_lines.len() {
-            let line = &log_lines[log_lines.len() - 1 - selected];
+        if selected > 0 {
+            let actual_index = selected - 1;
+            // We need to recalculate the actual content lines for accurate scrolling
+            if actual_index < log_lines.len() {
+                let line = &log_lines[log_lines.len() - 1 - actual_index];
 
-            // Calculate actual content lines (same logic as in rendering)
-            let mut actual_content_lines = 0;
+                // Calculate actual content lines (same logic as in rendering)
+                let mut actual_content_lines = 0;
 
-            if line.statement.contains("[-- Batch Command") {
-                // Count batch processing lines
-                let mut current_batch_sql = String::new();
-                for statement_line in line.statement.lines() {
-                    if statement_line.starts_with("[-- Batch Command") {
-                        if !current_batch_sql.trim().is_empty() {
-                            actual_content_lines += 1; // batch header
-                            let format_options = FormatOptions {
-                                indent: sqlformat::Indent::Spaces(2),
-                                uppercase: Some(false),
-                                lines_between_queries: 1,
-                                ignore_case_convert: Some(vec![]),
-                            };
-                            let formatted_sql = format(
-                                &current_batch_sql.trim(),
-                                &QueryParams::None,
-                                &format_options,
-                            );
-                            if formatted_sql.trim().is_empty() {
-                                actual_content_lines += current_batch_sql.lines().count().max(1);
-                            } else {
-                                actual_content_lines += formatted_sql.lines().count();
+                if line.statement.contains("[-- Batch Command") {
+                    // Count batch processing lines
+                    let mut current_batch_sql = String::new();
+                    for statement_line in line.statement.lines() {
+                        if statement_line.starts_with("[-- Batch Command") {
+                            if !current_batch_sql.trim().is_empty() {
+                                actual_content_lines += 1; // batch header
+                                let format_options = FormatOptions {
+                                    indent: sqlformat::Indent::Spaces(2),
+                                    uppercase: Some(false),
+                                    lines_between_queries: 1,
+                                    ignore_case_convert: Some(vec![]),
+                                };
+                                let formatted_sql = format(
+                                    &current_batch_sql.trim(),
+                                    &QueryParams::None,
+                                    &format_options,
+                                );
+                                if formatted_sql.trim().is_empty() {
+                                    actual_content_lines +=
+                                        current_batch_sql.lines().count().max(1);
+                                } else {
+                                    actual_content_lines += formatted_sql.lines().count();
+                                }
+                                actual_content_lines += 1; // separator
                             }
-                            actual_content_lines += 1; // separator
+                            current_batch_sql.clear();
+                        } else {
+                            if !current_batch_sql.is_empty() {
+                                current_batch_sql.push('\n');
+                            }
+                            current_batch_sql.push_str(statement_line);
                         }
-                        current_batch_sql.clear();
-                    } else {
-                        if !current_batch_sql.is_empty() {
-                            current_batch_sql.push('\n');
-                        }
-                        current_batch_sql.push_str(statement_line);
                     }
-                }
-                // Final batch
-                if !current_batch_sql.trim().is_empty() {
-                    actual_content_lines += 1; // batch header
+                    // Final batch
+                    if !current_batch_sql.trim().is_empty() {
+                        actual_content_lines += 1; // batch header
+                        let format_options = FormatOptions {
+                            indent: sqlformat::Indent::Spaces(2),
+                            uppercase: Some(false),
+                            lines_between_queries: 1,
+                            ignore_case_convert: Some(vec![]),
+                        };
+                        let formatted_sql = format(
+                            &current_batch_sql.trim(),
+                            &QueryParams::None,
+                            &format_options,
+                        );
+                        if formatted_sql.trim().is_empty() {
+                            actual_content_lines += current_batch_sql.lines().count().max(1);
+                        } else {
+                            actual_content_lines += formatted_sql.lines().count();
+                        }
+                    }
+                } else {
+                    // Regular statement
+                    actual_content_lines += 1; // mode indicator
                     let format_options = FormatOptions {
                         indent: sqlformat::Indent::Spaces(2),
                         uppercase: Some(false),
                         lines_between_queries: 1,
                         ignore_case_convert: Some(vec![]),
                     };
-                    let formatted_sql = format(
-                        &current_batch_sql.trim(),
-                        &QueryParams::None,
-                        &format_options,
-                    );
+                    let formatted_sql =
+                        format(&line.statement, &QueryParams::None, &format_options);
                     if formatted_sql.trim().is_empty() {
-                        actual_content_lines += current_batch_sql.lines().count().max(1);
+                        actual_content_lines += line.statement.lines().count().max(1);
                     } else {
                         actual_content_lines += formatted_sql.lines().count();
                     }
+                    actual_content_lines += 1; // end statement marker
                 }
-            } else {
-                // Regular statement
-                actual_content_lines += 1; // mode indicator
-                let format_options = FormatOptions {
-                    indent: sqlformat::Indent::Spaces(2),
-                    uppercase: Some(false),
-                    lines_between_queries: 1,
-                    ignore_case_convert: Some(vec![]),
-                };
-                let formatted_sql = format(&line.statement, &QueryParams::None, &format_options);
-                if formatted_sql.trim().is_empty() {
-                    actual_content_lines += line.statement.lines().count().max(1);
-                } else {
-                    actual_content_lines += formatted_sql.lines().count();
-                }
-                actual_content_lines += 1; // end statement marker
-            }
 
-            let current_cursor = scroll_cursors.get(&selected).cloned().unwrap_or(0);
-            let current_offset = scroll_offsets.get(&selected).cloned().unwrap_or(0);
+                let current_cursor = scroll_cursors.get(&actual_index).cloned().unwrap_or(0);
+                let current_offset = scroll_offsets.get(&actual_index).cloned().unwrap_or(0);
 
-            // Move cursor down if not at the end
-            if current_cursor < actual_content_lines.saturating_sub(1) {
-                let new_cursor = current_cursor + 1;
-                scroll_cursors.insert(selected, new_cursor);
+                // Move cursor down if not at the end
+                if current_cursor < actual_content_lines.saturating_sub(1) {
+                    let new_cursor = current_cursor + 1;
+                    scroll_cursors.insert(actual_index, new_cursor);
 
-                // Auto-scroll if cursor goes beyond visible area
-                if new_cursor >= current_offset + MAX_EXPANDED_HEIGHT {
-                    scroll_offsets.insert(selected, current_offset + 1);
+                    // Auto-scroll if cursor goes beyond visible area
+                    if new_cursor >= current_offset + MAX_EXPANDED_HEIGHT {
+                        scroll_offsets.insert(actual_index, current_offset + 1);
+                    }
                 }
             }
         }

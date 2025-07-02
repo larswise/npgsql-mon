@@ -404,9 +404,9 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
 
                                             if let Some(ref mut cb) = clipboard {
                                                 if cb.set_text(text_to_copy).is_ok() {
-                                                    // Flash the indicator on the correct item (selected)
+                                                    // Flash the indicator on the correct item (use actual_index for rendering)
                                                     copy_flash_state =
-                                                        Some((selected, std::time::Instant::now()));
+                                                        Some((actual_index, std::time::Instant::now()));
                                                 }
                                             }
                                         }
