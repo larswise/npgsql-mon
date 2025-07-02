@@ -459,13 +459,12 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                             KeyCode::Char('l') => {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 0 {
-                                        // Skip padding line
-                                        let actual_index = selected - 1; // Convert to actual log index
+                                        // Only enter scroll mode if the selected item is expanded
+                                        let actual_index = selected - 1;
                                         if expanded_items.contains(&actual_index) {
-                                            // Simply enter scroll mode for any expanded item
                                             scroll_mode = true;
                                             scroll_offsets.insert(actual_index, 0);
-                                            scroll_cursors.insert(actual_index, 0); // Start cursor at first line
+                                            scroll_cursors.insert(actual_index, 0);
                                         }
                                     }
                                 }

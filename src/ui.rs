@@ -276,8 +276,7 @@ pub fn render_accordion_item(
                 )));
             }
         }
-        let bottom_padding = format!(" {:<width$} ", "", width = width.saturating_sub(2));
-        lines.push(Line::from(Span::styled(bottom_padding, style)));
+        // Removed bottom padding line
     } else {
         let endpoint_str = line.endpoint.clone().unwrap_or("N/A".to_string());
         let http_method = line.http_method.clone().unwrap_or("UNKNOWN".to_string());
