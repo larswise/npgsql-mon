@@ -124,8 +124,21 @@ pub fn render_accordion_item(
     let arrow = if is_expanded { "▼" } else { "►" };
     let mut lines = vec![];
     if is_expanded {
-        let endpoint_str = line.endpoint.clone().unwrap_or("N/A".to_string());
-        let http_method = line.http_method.clone().unwrap_or("UNKNOWN".to_string());
+        let (endpoint_str, http_method) = if line.http_method.is_none() {
+            // Show caller info when http_method is null
+            let caller_info = match (&line.caller_method, &line.caller_class) {
+                (Some(method), Some(class)) => format!("{} in {}", method, class),
+                (Some(method), None) => method.clone(),
+                (None, Some(class)) => format!("in {}", class),
+                (None, None) => "N/A".to_string(),
+            };
+            (caller_info, "CALL".to_string())
+        } else {
+            (
+                line.endpoint.clone().unwrap_or("N/A".to_string()),
+                line.http_method.clone().unwrap_or("UNKNOWN".to_string()),
+            )
+        };
         let header_line = render_header_row(
             arrow,
             &formatted_duration,
@@ -278,8 +291,21 @@ pub fn render_accordion_item(
         }
         // Removed bottom padding line
     } else {
-        let endpoint_str = line.endpoint.clone().unwrap_or("N/A".to_string());
-        let http_method = line.http_method.clone().unwrap_or("UNKNOWN".to_string());
+        let (endpoint_str, http_method) = if line.http_method.is_none() {
+            // Show caller info when http_method is null
+            let caller_info = match (&line.caller_method, &line.caller_class) {
+                (Some(method), Some(class)) => format!("{} in {}", method, class),
+                (Some(method), None) => method.clone(),
+                (None, Some(class)) => format!("in {}", class),
+                (None, None) => "N/A".to_string(),
+            };
+            (caller_info, "CALL".to_string())
+        } else {
+            (
+                line.endpoint.clone().unwrap_or("N/A".to_string()),
+                line.http_method.clone().unwrap_or("UNKNOWN".to_string()),
+            )
+        };
         let header_line = render_header_row(
             arrow,
             &formatted_duration,

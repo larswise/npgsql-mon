@@ -27,9 +27,12 @@ mod ui;
 struct SqlLogMessage {
     statement: String,
     duration: u64,
-    timestamp: String,           // or use chrono::DateTime if needed
-    endpoint: Option<String>,    // nullable field
-    http_method: Option<String>, // nullable field
+    timestamp: String,                // or use chrono::DateTime if needed
+    endpoint: Option<String>,         // nullable field
+    http_method: Option<String>,      // nullable field
+    caller_namespace: Option<String>, // nullable field
+    caller_class: Option<String>,     // nullable field
+    caller_method: Option<String>,    // nullable field
 }
 
 const MAX_EXPANDED_HEIGHT: usize = 40; // Maximum lines for expanded accordion (increased for 80% screen usage)
@@ -405,8 +408,10 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                             if let Some(ref mut cb) = clipboard {
                                                 if cb.set_text(text_to_copy).is_ok() {
                                                     // Flash the indicator on the correct item (use actual_index for rendering)
-                                                    copy_flash_state =
-                                                        Some((actual_index, std::time::Instant::now()));
+                                                    copy_flash_state = Some((
+                                                        actual_index,
+                                                        std::time::Instant::now(),
+                                                    ));
                                                 }
                                             }
                                         }
