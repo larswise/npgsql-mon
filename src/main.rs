@@ -127,14 +127,17 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
         }
 
         // Restore selection based on UID after new logs arrive
-        if !scroll_mode && new_logs_received && selected_uid.is_some() {
-            let filtered_lines = filter_log_lines(&log_lines, &filter_text);
-            if let Some(uid) = &selected_uid {
-                // Find the item with the matching UID
-                for (index, line) in filtered_lines.iter().rev().enumerate() {
-                    if line.uid.as_ref() == Some(uid) {
-                        list_state.select(Some(index + 1)); // +1 for padding line
-                        break;
+        // Only do this if scroll_mode is NOT active, so scroll mode selection stays stable
+        if new_logs_received && selected_uid.is_some() {
+            if !scroll_mode {
+                let filtered_lines = filter_log_lines(&log_lines, &filter_text);
+                if let Some(uid) = &selected_uid {
+                    // Find the item with the matching UID
+                    for (index, line) in filtered_lines.iter().rev().enumerate() {
+                        if line.uid.as_ref() == Some(uid) {
+                            list_state.select(Some(index + 1)); // +1 for padding line
+                            break;
+                        }
                     }
                 }
             }
