@@ -127,7 +127,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
         }
 
         // Restore selection based on UID after new logs arrive
-        if new_logs_received && selected_uid.is_some() {
+        if !scroll_mode && new_logs_received && selected_uid.is_some() {
             let filtered_lines = filter_log_lines(&log_lines, &filter_text);
             if let Some(uid) = &selected_uid {
                 // Find the item with the matching UID
