@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::Line,
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
 use sqlformat::{FormatOptions, QueryParams, format};
@@ -88,6 +88,10 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
     let mut copy_flash_state: Option<(usize, std::time::Instant)> = None;
     const COPY_FLASH_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
 
+    // Filter state
+    let mut filter_text = String::new();
+    let mut filter_focused = false;
+
     // Track the last known list height for paging
     let mut last_list_height = 10usize;
     loop {
@@ -111,17 +115,35 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0)].as_ref())
+                .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
                 .split(f.size());
-            // Save the height for paging
-            last_list_height = chunks[0].height as usize;
+            
+            // Save the height for paging (use the list area height)
+            last_list_height = chunks[1].height as usize;
+
+            // Render filter input
+            let filter_input = Paragraph::new(filter_text.clone())
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(if filter_focused {
+                            Style::default().fg(Color::Yellow)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        })
+                        .title(" Filter requests ")
+                        .title_style(Style::default().fg(Color::White)),
+                )
+                .style(Style::default().fg(Color::White));
+            
+            f.render_widget(filter_input, chunks[0]);
 
             // Create inner padding area inside the border
             let inner_area = ratatui::layout::Rect {
-                x: chunks[0].x + 1, // Reduced horizontal padding inside border
-                y: chunks[0].y + 1, // Reduced vertical padding inside border
-                width: chunks[0].width.saturating_sub(2), // Reduce width for padding
-                height: chunks[0].height.saturating_sub(1), // Reduce height for padding
+                x: chunks[1].x + 1, // Reduced horizontal padding inside border
+                y: chunks[1].y + 1, // Reduced vertical padding inside border
+                width: chunks[1].width.saturating_sub(2), // Reduce width for padding
+                height: chunks[1].height.saturating_sub(1), // Reduce height for padding
             };
 
             // Create items for the accordion list with top padding
@@ -130,8 +152,11 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                 ListItem::new(vec![Line::from("")]),
             ];
 
+            // Filter the log lines based on the filter text
+            let filtered_lines = filter_log_lines(&log_lines, &filter_text);
+            
             // Add the actual accordion items
-            let accordion_items: Vec<ListItem> = log_lines
+            let accordion_items: Vec<ListItem> = filtered_lines
                 .iter()
                 .rev()
                 .enumerate()
@@ -420,10 +445,31 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                             }
                             _ => {}
                         }
+                    } else if filter_focused {
+                        // Handle filter input
+                        match key.code {
+                            KeyCode::Char('q') => break,
+                            KeyCode::Esc => {
+                                filter_focused = false;
+                            }
+                            KeyCode::Char(c) => {
+                                filter_text.push(c);
+                            }
+                            KeyCode::Backspace => {
+                                filter_text.pop();
+                            }
+                            KeyCode::Enter => {
+                                filter_focused = false;
+                            }
+                            _ => {}
+                        }
                     } else {
                         // Handle normal accordion navigation
                         match key.code {
                             KeyCode::Char('q') => break,
+                            KeyCode::Char('f') => {
+                                filter_focused = true;
+                            }
                             KeyCode::Up | KeyCode::Char('k') => {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 1 {
@@ -433,12 +479,13 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                 }
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
+                                let filtered_lines = filter_log_lines(&log_lines, &filter_text);
                                 if let Some(selected) = list_state.selected() {
-                                    if selected < log_lines.len() {
+                                    if selected < filtered_lines.len() {
                                         // Account for padding line
                                         list_state.select(Some(selected + 1));
                                     }
-                                } else if !log_lines.is_empty() {
+                                } else if !filtered_lines.is_empty() {
                                     list_state.select(Some(1)); // Start at index 1 (first actual item)
                                 }
                             }
@@ -561,4 +608,30 @@ fn get_http_method_color(method: &str) -> Color {
         "HEAD" => Color::Rgb(155, 155, 155),   // Grey (#9b9b9b)
         _ => Color::Rgb(128, 128, 128),        // Default grey
     }
+}
+
+fn filter_log_lines<'a>(log_lines: &'a [SqlLogMessage], filter_text: &str) -> Vec<&'a SqlLogMessage> {
+    if filter_text.is_empty() {
+        return log_lines.iter().collect();
+    }
+    
+    log_lines.iter().filter(|line| {
+        // Check http_method or "CALL" when http_method is null
+        let method_match = if line.http_method.is_none() {
+            "CALL".contains(filter_text)
+        } else {
+            line.http_method.as_ref().map_or(false, |method| method.contains(filter_text))
+        };
+        
+        // Check endpoint
+        let endpoint_match = line.endpoint.as_ref().map_or(false, |endpoint| endpoint.contains(filter_text));
+        
+        // Check caller_class
+        let caller_class_match = line.caller_class.as_ref().map_or(false, |class| class.contains(filter_text));
+        
+        // Check caller_method
+        let caller_method_match = line.caller_method.as_ref().map_or(false, |method| method.contains(filter_text));
+        
+        method_match || endpoint_match || caller_class_match || caller_method_match
+    }).collect()
 }
