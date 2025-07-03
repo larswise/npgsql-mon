@@ -86,7 +86,7 @@ pub fn render_header_row(
 pub fn render_accordion_item(
     index: usize,
     line: &crate::SqlLogMessage,
-    expanded_items: &std::collections::HashSet<usize>,
+    expanded_uids: &std::collections::HashSet<String>,
     copy_flash_state: Option<(usize, std::time::Instant)>,
     list_state: &ratatui::widgets::ListState,
     scroll_mode: bool,
@@ -120,7 +120,10 @@ pub fn render_accordion_item(
     let flash_bg = ratatui::style::Color::Rgb(0, 255, 0);
     let flash_fg = ratatui::style::Color::Rgb(0, 0, 0);
     let formatted_duration = crate::format_duration(line.duration);
-    let is_expanded = expanded_items.contains(&index);
+    let is_expanded = match &line.uid {
+        Some(uid) => expanded_uids.contains(uid),
+        None => false,
+    };
     let arrow = if is_expanded { "▼" } else { "►" };
     let mut lines = vec![];
     if is_expanded {

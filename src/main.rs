@@ -71,7 +71,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut log_lines: Vec<SqlLogMessage> = vec![];
-    let mut expanded_items: HashSet<usize> = HashSet::new();
+    let mut expanded_uids: HashSet<String> = HashSet::new();
     let mut list_state = ListState::default();
     list_state.select(Some(1)); // Start at index 1 to account for padding line
 
@@ -153,7 +153,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
                 .split(f.size());
-            
+
             // Save the height for paging (use the list area height)
             last_list_height = chunks[1].height as usize;
 
@@ -171,7 +171,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                         .title_style(Style::default().fg(Color::White)),
                 )
                 .style(Style::default().fg(Color::White));
-            
+
             f.render_widget(filter_input, chunks[0]);
 
             // Create inner padding area inside the border
@@ -190,7 +190,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
 
             // Filter the log lines based on the filter text
             let filtered_lines = filter_log_lines(&log_lines, &filter_text);
-            
+
             // Add the actual accordion items
             let accordion_items: Vec<ListItem> = filtered_lines
                 .iter()
@@ -200,7 +200,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                     ui::render_accordion_item(
                         index,
                         line,
-                        &expanded_items,
+                        &expanded_uids,
                         copy_flash_state,
                         &list_state,
                         scroll_mode,
@@ -246,7 +246,8 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 0 {
                                         let actual_index = selected - 1;
-                                        let filtered_lines = filter_log_lines(&log_lines, &filter_text);
+                                        let filtered_lines =
+                                            filter_log_lines(&log_lines, &filter_text);
                                         ui::handle_down(
                                             &filtered_lines,
                                             &list_state,
@@ -559,14 +560,22 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                             KeyCode::Enter => {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 0 {
-                                        // Skip padding line
                                         let actual_index = selected - 1; // Convert to actual log index
-                                        if expanded_items.contains(&actual_index) {
-                                            // Collapse the accordion
-                                            expanded_items.remove(&actual_index);
-                                        } else {
-                                            // Expand the accordion
-                                            expanded_items.insert(actual_index);
+                                        let filtered_lines =
+                                            filter_log_lines(&log_lines, &filter_text);
+                                        if actual_index < filtered_lines.len() {
+                                            if let Some(uid) = &filtered_lines
+                                                [filtered_lines.len() - 1 - actual_index]
+                                                .uid
+                                            {
+                                                if expanded_uids.contains(uid) {
+                                                    // Collapse the accordion
+                                                    expanded_uids.remove(uid);
+                                                } else {
+                                                    // Expand the accordion
+                                                    expanded_uids.insert(uid.clone());
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -575,11 +584,20 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 0 {
                                         let actual_index = selected - 1;
-                                        if expanded_items.contains(&actual_index) {
-                                            scroll_mode = true;
-                                            // Always reset scroll position when entering scroll mode
-                                            scroll_offsets.insert(actual_index, 0);
-                                            scroll_cursors.insert(actual_index, 0);
+                                        let filtered_lines =
+                                            filter_log_lines(&log_lines, &filter_text);
+                                        if actual_index < filtered_lines.len() {
+                                            if let Some(uid) = &filtered_lines
+                                                [filtered_lines.len() - 1 - actual_index]
+                                                .uid
+                                            {
+                                                if expanded_uids.contains(uid) {
+                                                    scroll_mode = true;
+                                                    // Always reset scroll position when entering scroll mode
+                                                    scroll_offsets.insert(actual_index, 0);
+                                                    scroll_cursors.insert(actual_index, 0);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -647,28 +665,45 @@ fn get_http_method_color(method: &str) -> Color {
     }
 }
 
-fn filter_log_lines<'a>(log_lines: &'a [SqlLogMessage], filter_text: &str) -> Vec<&'a SqlLogMessage> {
+fn filter_log_lines<'a>(
+    log_lines: &'a [SqlLogMessage],
+    filter_text: &str,
+) -> Vec<&'a SqlLogMessage> {
     if filter_text.is_empty() {
         return log_lines.iter().collect();
     }
-    
-    log_lines.iter().filter(|line| {
-        // Check http_method or "CALL" when http_method is null
-        let method_match = if line.http_method.is_none() {
-            "CALL".contains(filter_text)
-        } else {
-            line.http_method.as_ref().map_or(false, |method| method.contains(filter_text))
-        };
-        
-        // Check endpoint
-        let endpoint_match = line.endpoint.as_ref().map_or(false, |endpoint| endpoint.contains(filter_text));
-        
-        // Check caller_class
-        let caller_class_match = line.caller_class.as_ref().map_or(false, |class| class.contains(filter_text));
-        
-        // Check caller_method
-        let caller_method_match = line.caller_method.as_ref().map_or(false, |method| method.contains(filter_text));
-        
-        method_match || endpoint_match || caller_class_match || caller_method_match
-    }).collect()
+
+    log_lines
+        .iter()
+        .filter(|line| {
+            // Check http_method or "CALL" when http_method is null
+            let method_match = if line.http_method.is_none() {
+                "CALL".contains(filter_text)
+            } else {
+                line.http_method
+                    .as_ref()
+                    .map_or(false, |method| method.contains(filter_text))
+            };
+
+            // Check endpoint
+            let endpoint_match = line
+                .endpoint
+                .as_ref()
+                .map_or(false, |endpoint| endpoint.contains(filter_text));
+
+            // Check caller_class
+            let caller_class_match = line
+                .caller_class
+                .as_ref()
+                .map_or(false, |class| class.contains(filter_text));
+
+            // Check caller_method
+            let caller_method_match = line
+                .caller_method
+                .as_ref()
+                .map_or(false, |method| method.contains(filter_text));
+
+            method_match || endpoint_match || caller_class_match || caller_method_match
+        })
+        .collect()
 }
