@@ -33,6 +33,7 @@ struct SqlLogMessage {
     caller_namespace: Option<String>, // nullable field
     caller_class: Option<String>,     // nullable field
     caller_method: Option<String>,    // nullable field
+    uid: Option<String>,              // unique identifier for tracking selections
 }
 
 const MAX_EXPANDED_HEIGHT: usize = 40; // Maximum lines for expanded accordion (increased for 80% screen usage)
@@ -92,15 +93,50 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
     let mut filter_text = String::new();
     let mut filter_focused = false;
 
+    // UID-based selection tracking
+    let mut selected_uid: Option<String> = None;
+
     // Track the last known list height for paging
     let mut last_list_height = 10usize;
     loop {
+        // Store current selection UID before processing new logs
+        if let Some(selected) = list_state.selected() {
+            if selected > 0 {
+                let actual_index = selected - 1;
+                let filtered_lines = filter_log_lines(&log_lines, &filter_text);
+                if actual_index < filtered_lines.len() {
+                    let line = filtered_lines[filtered_lines.len() - 1 - actual_index];
+                    selected_uid = line.uid.clone();
+                }
+            }
+        }
+
         // Check for new logs
+        let mut new_logs_received = false;
         while let Ok(line) = rx.try_recv() {
-            let msg: SqlLogMessage = serde_json::from_str(&line)?;
+            let mut msg: SqlLogMessage = serde_json::from_str(&line)?;
+            // Generate UID if not present
+            if msg.uid.is_none() {
+                msg.uid = Some(format!("{}-{}", msg.timestamp, log_lines.len()));
+            }
             log_lines.push(msg);
             if log_lines.len() > 1000 {
                 log_lines.remove(0);
+            }
+            new_logs_received = true;
+        }
+
+        // Restore selection based on UID after new logs arrive
+        if new_logs_received && selected_uid.is_some() {
+            let filtered_lines = filter_log_lines(&log_lines, &filter_text);
+            if let Some(uid) = &selected_uid {
+                // Find the item with the matching UID
+                for (index, line) in filtered_lines.iter().rev().enumerate() {
+                    if line.uid.as_ref() == Some(uid) {
+                        list_state.select(Some(index + 1)); // +1 for padding line
+                        break;
+                    }
+                }
             }
         }
 
