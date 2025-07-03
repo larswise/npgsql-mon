@@ -1,3 +1,4 @@
+
 name: Release
 
 on:
@@ -6,14 +7,14 @@ on:
 
 jobs:
   build:
-    name: Build for ${{ matrix.os }}
+    name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@v3
 
       - name: Set up Rust
@@ -24,11 +25,22 @@ jobs:
       - name: Build release
         run: cargo build --release
 
+      - name: Rename binary for upload
+        run: |
+          mkdir -p dist
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp target/release/npgsql-mon.exe dist/npgsql-mon-windows.exe
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            cp target/release/npgsql-mon dist/npgsql-mon-macos
+          else
+            cp target/release/npgsql-mon dist/npgsql-mon-linux
+          fi
+        shell: bash
+
       - name: Upload release asset
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            target/release/npgsql-mon.exe
-            target/release/npgsql-mon
+          files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
