@@ -210,8 +210,9 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 0 {
                                         let actual_index = selected - 1;
+                                        let filtered_lines = filter_log_lines(&log_lines, &filter_text);
                                         ui::handle_down(
-                                            &log_lines,
+                                            &filtered_lines,
                                             &list_state,
                                             &mut scroll_offsets,
                                             &mut scroll_cursors,

@@ -403,7 +403,7 @@ pub fn render_sql_lines(
 }
 
 pub fn handle_down(
-    log_lines: &Vec<SqlLogMessage>,
+    filtered_lines: &Vec<&SqlLogMessage>,
     list_state: &ListState,
     scroll_offsets: &mut std::collections::HashMap<usize, usize>,
     scroll_cursors: &mut std::collections::HashMap<usize, usize>,
@@ -412,8 +412,8 @@ pub fn handle_down(
         if selected > 0 {
             let actual_index = selected - 1;
             // We need to recalculate the actual content lines for accurate scrolling
-            if actual_index < log_lines.len() {
-                let line = &log_lines[log_lines.len() - 1 - actual_index];
+            if actual_index < filtered_lines.len() {
+                let line = filtered_lines[filtered_lines.len() - 1 - actual_index];
 
                 // Calculate actual content lines (same logic as in rendering)
                 let mut actual_content_lines = 0;
