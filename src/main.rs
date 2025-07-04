@@ -75,6 +75,9 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
     let mut list_state = ListState::default();
     list_state.select(Some(1)); // Start at index 1 to account for padding line
 
+    // Main scroll offset: index of the topmost visible item in the filtered list
+    let mut main_scroll_offset: usize = 0;
+
     // Scroll state management
     let mut scroll_mode = false;
     let mut scroll_offsets: std::collections::HashMap<usize, usize> =
@@ -133,10 +136,28 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                 let filtered_lines = filter_log_lines(&log_lines, &filter_text);
                 if let Some(uid) = &selected_uid {
                     // Find the item with the matching UID
+                    let mut found_index = None;
                     for (index, line) in filtered_lines.iter().rev().enumerate() {
                         if line.uid.as_ref() == Some(uid) {
+                            found_index = Some(index);
                             list_state.select(Some(index + 1)); // +1 for padding line
                             break;
+                        }
+                    }
+                    // Adjust main_scroll_offset to keep selected item at same visible position
+                    if let Some(found_index) = found_index {
+                        // If the previous selected index was known, keep the same relative position
+                        // Otherwise, keep the selected item visible
+                        let visible_height = last_list_height.saturating_sub(2); // minus border/padding
+                        if found_index < main_scroll_offset {
+                            main_scroll_offset = found_index;
+                        } else if found_index >= main_scroll_offset + visible_height {
+                            main_scroll_offset = found_index.saturating_sub(visible_height - 1);
+                        }
+                        // Clamp scroll offset to valid range
+                        let max_scroll = filtered_lines.len().saturating_sub(visible_height);
+                        if main_scroll_offset > max_scroll {
+                            main_scroll_offset = max_scroll;
                         }
                     }
                 }
