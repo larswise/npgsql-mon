@@ -52,29 +52,6 @@ jobs:
           name: npgsql-mon-windows.exe
           path: dist/npgsql-mon-windows.exe
 
-  build-macos:
-    name: Build macOS
-    runs-on: macos-latest
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v3
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-      - name: Build release
-        run: cargo build --release
-      - name: Prepare binary
-        run: |
-          mkdir -p dist
-          cp target/release/npgsql-mon dist/npgsql-mon-macos
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: npgsql-mon-macos
-          path: dist/npgsql-mon-macos
-
   upload-release:
     name: Upload Release Assets
     needs: [build-linux, build-windows, build-macos]
