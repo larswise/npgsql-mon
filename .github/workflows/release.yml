@@ -1,5 +1,4 @@
 name: Release
-
 on:
   release:
     types: [published]
@@ -54,7 +53,7 @@ jobs:
 
   upload-release:
     name: Upload Release Assets
-    needs: [build-linux, build-windows, build-macos]
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Download Linux artifact
@@ -66,11 +65,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: npgsql-mon-windows.exe
-          path: dist
-      - name: Download macOS artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: npgsql-mon-macos
           path: dist
       - name: Upload release asset
         uses: softprops/action-gh-release@v1
