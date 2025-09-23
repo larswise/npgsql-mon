@@ -23,7 +23,7 @@ use arboard::Clipboard;
 mod format;
 mod ui;
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 struct SqlLogMessage {
     statement: String,
     duration: u64,
@@ -36,7 +36,93 @@ struct SqlLogMessage {
     uid: Option<String>,              // unique identifier for tracking selections
 }
 
-const MAX_EXPANDED_HEIGHT: usize = 40; // Maximum lines for expanded accordion (increased for 80% screen usage)
+// Group key for organizing messages by endpoint + HTTP method
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
+struct RequestGroup {
+    endpoint: String,
+    http_method: String,
+}
+
+impl RequestGroup {
+    fn from_message(msg: &SqlLogMessage) -> Self {
+        let (endpoint_str, http_method) = if msg.http_method.is_none() {
+            // Show caller info when http_method is null
+            let caller_info = match (&msg.caller_method, &msg.caller_class) {
+                (Some(method), Some(class)) => format!("{} in {}", method, class),
+                (Some(method), None) => method.clone(),
+                (None, Some(class)) => format!("in {}", class),
+                (None, None) => "N/A".to_string(),
+            };
+            (caller_info, "CALL".to_string())
+        } else {
+            (
+                msg.endpoint.clone().unwrap_or("N/A".to_string()),
+                msg.http_method.clone().unwrap_or("UNKNOWN".to_string()),
+            )
+        };
+        
+        RequestGroup {
+            endpoint: endpoint_str,
+            http_method,
+        }
+    }
+}
+
+// Grouped data structure
+struct GroupedLogMessages {
+    groups: Vec<(RequestGroup, Vec<SqlLogMessage>)>,
+}
+
+impl GroupedLogMessages {
+    fn from_messages(messages: &[SqlLogMessage], pinned_groups: &HashSet<RequestGroup>) -> Self {
+        let mut group_map: std::collections::HashMap<RequestGroup, Vec<SqlLogMessage>> = 
+            std::collections::HashMap::new();
+            
+        // Group messages by RequestGroup
+        for msg in messages {
+            let group = RequestGroup::from_message(msg);
+            group_map.entry(group).or_insert_with(Vec::new).push(msg.clone());
+        }
+        
+        // Convert to ordered vector, sorted by most recent message in each group
+        let mut groups: Vec<(RequestGroup, Vec<SqlLogMessage>)> = group_map.into_iter().collect();
+        groups.sort_by(|a, b| {
+            // Pinned groups always come first
+            let a_pinned = pinned_groups.contains(&a.0);
+            let b_pinned = pinned_groups.contains(&b.0);
+            
+            match (a_pinned, b_pinned) {
+                (true, false) => std::cmp::Ordering::Less,  // a is pinned, b is not
+                (false, true) => std::cmp::Ordering::Greater, // b is pinned, a is not
+                _ => {
+                    // Both pinned or both not pinned, sort by timestamp
+                    let a_latest = a.1.iter().map(|msg| &msg.timestamp).max();
+                    let b_latest = b.1.iter().map(|msg| &msg.timestamp).max();
+                    let timestamp_cmp = b_latest.cmp(&a_latest); // Most recent first
+                    
+                    // If timestamps are equal, use endpoint and method for stable sorting
+                    if timestamp_cmp == std::cmp::Ordering::Equal {
+                        let endpoint_cmp = a.0.endpoint.cmp(&b.0.endpoint);
+                        if endpoint_cmp == std::cmp::Ordering::Equal {
+                            a.0.http_method.cmp(&b.0.http_method)
+                        } else {
+                            endpoint_cmp
+                        }
+                    } else {
+                        timestamp_cmp
+                    }
+                }
+            }
+        });
+        
+        GroupedLogMessages { groups }
+    }
+    
+    #[allow(dead_code)]
+    fn total_item_count(&self) -> usize {
+        self.groups.iter().map(|(_, messages)| messages.len()).sum()
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -71,7 +157,10 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut log_lines: Vec<SqlLogMessage> = vec![];
+    let mut log_buffer: Vec<String> = vec![]; // Buffer for new logs during scrollmode
     let mut expanded_uids: HashSet<String> = HashSet::new();
+    let mut expanded_groups: HashSet<RequestGroup> = HashSet::new(); // Track expanded groups
+    let mut pinned_groups: HashSet<RequestGroup> = HashSet::new(); // Track pinned groups
     let mut list_state = ListState::default();
     list_state.select(Some(1)); // Start at index 1 to account for padding line
 
@@ -96,6 +185,9 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
     let mut filter_text = String::new();
     let mut filter_focused = false;
 
+    // Help screen state
+    let mut help_screen_visible = false;
+
     // UID-based selection tracking
     let mut selected_uid: Option<String> = None;
 
@@ -106,10 +198,17 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
         if let Some(selected) = list_state.selected() {
             if selected > 0 {
                 let actual_index = selected - 1;
-                let filtered_lines = filter_log_lines(&log_lines, &filter_text);
-                if actual_index < filtered_lines.len() {
-                    let line = filtered_lines[filtered_lines.len() - 1 - actual_index];
-                    selected_uid = line.uid.clone();
+                let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                let flat_items = create_flat_navigation_structure(&grouped_messages, &expanded_groups, &filter_text);
+                if actual_index < flat_items.len() {
+                    match &flat_items[actual_index] {
+                        FlatNavigationItem::Message(msg) => {
+                            selected_uid = msg.uid.clone();
+                        }
+                        FlatNavigationItem::GroupHeader(_) => {
+                            // Group headers don't have UIDs, keep the current selection
+                        }
+                    }
                 }
             }
         }
@@ -117,31 +216,52 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
         // Check for new logs
         let mut new_logs_received = false;
         while let Ok(line) = rx.try_recv() {
-            let mut msg: SqlLogMessage = serde_json::from_str(&line)?;
-            // Generate UID if not present
-            if msg.uid.is_none() {
-                msg.uid = Some(format!("{}-{}", msg.timestamp, log_lines.len()));
+            if scroll_mode {
+                log_buffer.push(line);
+            } else {
+                let mut msg: SqlLogMessage = serde_json::from_str(&line)?;
+                // Generate UID if not present
+                if msg.uid.is_none() {
+                    msg.uid = Some(format!("{}-{}", msg.timestamp, log_lines.len()));
+                }
+                log_lines.push(msg);
+                if log_lines.len() > 1000 {
+                    log_lines.remove(0);
+                }
+                new_logs_received = true;
             }
-            log_lines.push(msg);
-            if log_lines.len() > 1000 {
-                log_lines.remove(0);
+        }
+        // If scroll_mode was just exited, flush buffer
+        if !scroll_mode && !log_buffer.is_empty() {
+            for line in log_buffer.drain(..) {
+                let mut msg: SqlLogMessage = serde_json::from_str(&line)?;
+                if msg.uid.is_none() {
+                    msg.uid = Some(format!("{}-{}", msg.timestamp, log_lines.len()));
+                }
+                log_lines.push(msg);
+                if log_lines.len() > 1000 {
+                    log_lines.remove(0);
+                }
+                new_logs_received = true;
             }
-            new_logs_received = true;
         }
 
         // Restore selection based on UID after new logs arrive
         // Only do this if scroll_mode is NOT active, so scroll mode selection stays stable
         if new_logs_received && selected_uid.is_some() {
             if !scroll_mode {
-                let filtered_lines = filter_log_lines(&log_lines, &filter_text);
+                let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                let flat_items = create_flat_navigation_structure(&grouped_messages, &expanded_groups, &filter_text);
                 if let Some(uid) = &selected_uid {
-                    // Find the item with the matching UID
+                    // Find the item with the matching UID in the flattened structure
                     let mut found_index = None;
-                    for (index, line) in filtered_lines.iter().rev().enumerate() {
-                        if line.uid.as_ref() == Some(uid) {
-                            found_index = Some(index);
-                            list_state.select(Some(index + 1)); // +1 for padding line
-                            break;
+                    for (index, item) in flat_items.iter().enumerate() {
+                        if let FlatNavigationItem::Message(msg) = item {
+                            if msg.uid.as_ref() == Some(uid) {
+                                found_index = Some(index);
+                                list_state.select(Some(index + 1)); // +1 for padding line
+                                break;
+                            }
                         }
                     }
                     // Adjust main_scroll_offset to keep selected item at same visible position
@@ -155,7 +275,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                             main_scroll_offset = found_index.saturating_sub(visible_height - 1);
                         }
                         // Clamp scroll offset to valid range
-                        let max_scroll = filtered_lines.len().saturating_sub(visible_height);
+                        let max_scroll = flat_items.len().saturating_sub(visible_height);
                         if main_scroll_offset > max_scroll {
                             main_scroll_offset = max_scroll;
                         }
@@ -173,83 +293,155 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
 
         // Draw UI
         terminal.draw(|f| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
-                .split(f.size());
+            if help_screen_visible {
+                // Render help screen
+                let help_text = vec![
+                    Line::from(""),
+                    Line::from("NPGSQL MONITOR - HOTKEYS"),
+                    Line::from(""),
+                    Line::from("Navigation:"),
+                    Line::from("  j / ↓      Move down"),
+                    Line::from("  k / ↑      Move up"),
+                    Line::from("  Ctrl+d     Page down"),
+                    Line::from("  Ctrl+u     Page up"),
+                    Line::from(""),
+                    Line::from("Actions:"),
+                    Line::from("  Enter      Toggle expand/collapse"),
+                    Line::from("  l          Enter scroll mode"),
+                    Line::from("  t          Pin/unpin group"),
+                    Line::from("  f          Focus filter"),
+                    Line::from("  y          Copy SQL (in scroll mode)"),
+                    Line::from("  h          Show this help"),
+                    Line::from(""),
+                    Line::from("Scroll Mode:"),
+                    Line::from("  j / ↓      Scroll down one line"),
+                    Line::from("  k / ↑      Scroll up one line"),
+                    Line::from("  Ctrl+d     Scroll down half page"),
+                    Line::from("  Ctrl+u     Scroll up half page"),
+                    Line::from("  h          Exit scroll mode"),
+                    Line::from("  y          Copy current SQL"),
+                    Line::from("  Esc        Exit scroll mode & collapse"),
+                    Line::from(""),
+                    Line::from("Filter Mode:"),
+                    Line::from("  Type       Filter by endpoint/method/class"),
+                    Line::from("  Enter/Esc  Exit filter mode"),
+                    Line::from(""),
+                    Line::from("General:"),
+                    Line::from("  q          Quit application"),
+                    Line::from("  Esc        Close help screen"),
+                    Line::from(""),
+                ];
 
-            // Save the height for paging (use the list area height)
-            last_list_height = chunks[1].height as usize;
-
-            // Render filter input
-            let filter_input = Paragraph::new(filter_text.clone())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(if filter_focused {
-                            Style::default().fg(Color::Yellow)
-                        } else {
-                            Style::default().fg(Color::Gray)
-                        })
-                        .title(" Filter requests ")
-                        .title_style(Style::default().fg(Color::White)),
-                )
-                .style(Style::default().fg(Color::White));
-
-            f.render_widget(filter_input, chunks[0]);
-
-            // Create inner padding area inside the border
-            let inner_area = ratatui::layout::Rect {
-                x: chunks[1].x + 1, // Reduced horizontal padding inside border
-                y: chunks[1].y + 1, // Reduced vertical padding inside border
-                width: chunks[1].width.saturating_sub(2), // Reduce width for padding
-                height: chunks[1].height.saturating_sub(1), // Reduce height for padding
-            };
-
-            // Create items for the accordion list with top padding
-            let mut items: Vec<ListItem> = vec![
-                // Add empty line for top padding inside the border
-                ListItem::new(vec![Line::from("")]),
-            ];
-
-            // Filter the log lines based on the filter text
-            let filtered_lines = filter_log_lines(&log_lines, &filter_text);
-
-            // Add the actual accordion items
-            let accordion_items: Vec<ListItem> = filtered_lines
-                .iter()
-                .rev()
-                .enumerate()
-                .map(|(index, line)| {
-                    ui::render_accordion_item(
-                        index,
-                        line,
-                        &expanded_uids,
-                        copy_flash_state,
-                        &list_state,
-                        scroll_mode,
-                        &scroll_offsets,
-                        &scroll_cursors,
-                        MAX_EXPANDED_HEIGHT,
-                        chunks[0].width.saturating_sub(2) as usize,
+                let help_paragraph = Paragraph::new(help_text)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Yellow))
+                            .title(" Help - Press Esc to return ")
+                            .title_style(Style::default().fg(Color::Yellow)),
                     )
-                })
-                .collect();
+                    .style(Style::default().fg(Color::White));
 
-            items.extend(accordion_items);
+                f.render_widget(help_paragraph, f.size());
+            } else {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(
+                        [
+                            Constraint::Length(3), // filter
+                            Constraint::Length(2), // indicator
+                            Constraint::Min(0),    // accordion
+                        ]
+                        .as_ref(),
+                    )
+                    .split(f.size());
 
-            let log_list = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Rgb(0, 149, 255))) // #0095ff
-                        .title(" Npgsql monitor ")
-                        .title_style(Style::default().fg(Color::White)),
-                )
-                .highlight_style(Style::default())
-                .highlight_symbol("► ");
+                // Save the height for paging (use the list area height)
+                last_list_height = chunks[2].height as usize;
 
-            f.render_stateful_widget(log_list, inner_area, &mut list_state);
+                // Render filter input
+                let filter_input = Paragraph::new(filter_text.clone())
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(if filter_focused {
+                                Style::default().fg(Color::Yellow)
+                            } else {
+                                Style::default().fg(Color::Gray)
+                            })
+                            .title(" Filter requests ")
+                            .title_style(Style::default().fg(Color::White)),
+                    )
+                    .style(Style::default().fg(Color::White));
+
+                f.render_widget(filter_input, chunks[0]);
+
+                // Calculate indicator state
+                let _filtered_lines = filter_log_lines(&log_lines, &filter_text);
+                let _visible_height = last_list_height.saturating_sub(2); // minus border/padding
+                let above_count = main_scroll_offset;
+                let indicator = if above_count > 0 {
+                    Paragraph::new(format!("↑ {above_count} more items above"))
+                        .style(Style::default().fg(Color::Yellow))
+                } else {
+                    Paragraph::new("↓ All items visible").style(Style::default().fg(Color::Green))
+                };
+                f.render_widget(indicator, chunks[1]);
+
+                // Create inner padding area inside the border
+                let inner_area = ratatui::layout::Rect {
+                    x: chunks[2].x + 1, // Reduced horizontal padding inside border
+                    y: chunks[2].y + 1, // Reduced vertical padding inside border
+                    width: chunks[2].width.saturating_sub(2), // Reduce width for padding
+                    height: chunks[2].height.saturating_sub(1), // Reduce height for padding
+                };
+
+                // Create items for the accordion list with top padding
+                let mut items: Vec<ListItem> = vec![
+                    // Add empty line for top padding inside the border
+                    ListItem::new(vec![Line::from("")]),
+                ];
+
+                // Create grouped messages from the log lines
+                let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                
+                // Calculate dynamic max expanded height based on available screen space
+                // Reserve space for at least one more log entry (minimum 5 lines for context)
+                let min_reserved_space = 5; // Space for next log entry + separators
+                let available_height = last_list_height.saturating_sub(4); // Account for borders/padding
+                let dynamic_max_expanded_height = available_height.saturating_sub(min_reserved_space).max(10); // Minimum 10 lines for expanded content
+                
+                // Render grouped accordions
+                let accordion_items = ui::render_grouped_accordions(
+                    &grouped_messages,
+                    &expanded_groups,
+                    &expanded_uids,
+                    copy_flash_state,
+                    &list_state,
+                    scroll_mode,
+                    &scroll_offsets,
+                    &scroll_cursors,
+                    dynamic_max_expanded_height,
+                    chunks[0].width.saturating_sub(2) as usize,
+                    &filter_text,
+                    &pinned_groups,
+                );
+
+                items.extend(accordion_items);
+
+                let log_list = List::new(items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Rgb(0, 149, 255))) // #0095ff
+                            .title(" Npgsql monitor ")
+                            .title_style(Style::default().fg(Color::White)),
+                    )
+                    .highlight_style(Style::default())
+                    .highlight_symbol("► ");
+
+                f.render_stateful_widget(log_list, inner_area, &mut list_state);
+            }
         })?;
 
         // Handle keyboard events
@@ -259,25 +451,143 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                 // Only process key press events, not releases or repeats
                 if key_event.kind == KeyEventKind::Press {
                     let key = key_event;
-                    if scroll_mode {
+                    if help_screen_visible {
+                        // Handle help screen keys
+                        match key.code {
+                            KeyCode::Char('q') => break,
+                            KeyCode::Esc => {
+                                help_screen_visible = false;
+                            }
+                            _ => {}
+                        }
+                    } else if scroll_mode {
                         // Handle scroll mode keys
                         match key.code {
                             KeyCode::Char('q') => break,
                             KeyCode::Char('h') => {
                                 scroll_mode = false;
                             }
+                            KeyCode::Esc => {
+                                // Exit scrollmode and collapse open accordion
+                                if let Some(selected) = list_state.selected() {
+                                    if selected > 0 {
+                                        let actual_index = selected - 1;
+                                        let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                                        let flat_items = create_flat_navigation_structure(&grouped_messages, &expanded_groups, &filter_text);
+                                        
+                                        if actual_index < flat_items.len() {
+                                            if let FlatNavigationItem::Message(message) = &flat_items[actual_index] {
+                                                if let Some(uid) = &message.uid {
+                                                    expanded_uids.remove(uid);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                scroll_mode = false;
+                            }
                             KeyCode::Char('j') | KeyCode::Down => {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 0 {
                                         let actual_index = selected - 1;
-                                        let filtered_lines =
-                                            filter_log_lines(&log_lines, &filter_text);
-                                        ui::handle_down(
-                                            &filtered_lines,
-                                            &list_state,
-                                            &mut scroll_offsets,
-                                            &mut scroll_cursors,
-                                        );
+                                        let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                                        let flat_items = create_flat_navigation_structure(&grouped_messages, &expanded_groups, &filter_text);
+                                        
+                                        if actual_index < flat_items.len() {
+                                            if let FlatNavigationItem::Message(message) = &flat_items[actual_index] {
+                                                // Calculate actual content lines for this message
+                                                let mut total_lines = 0;
+
+                                                if message.statement.contains("[-- Batch Command") {
+                                                    // Count batch processing lines
+                                                    let mut current_batch_sql = String::new();
+                                                    for statement_line in message.statement.lines() {
+                                                        if statement_line.starts_with("[-- Batch Command") {
+                                                            if !current_batch_sql.trim().is_empty() {
+                                                                total_lines += 1; // batch header
+                                                                let format_options = FormatOptions {
+                                                                    indent: sqlformat::Indent::Spaces(2),
+                                                                    uppercase: Some(false),
+                                                                    lines_between_queries: 1,
+                                                                    ignore_case_convert: Some(vec![]),
+                                                                };
+                                                                let formatted_sql = format(
+                                                                    &current_batch_sql.trim(),
+                                                                    &QueryParams::None,
+                                                                    &format_options,
+                                                                );
+                                                                if formatted_sql.trim().is_empty() {
+                                                                    total_lines += current_batch_sql.lines().count().max(1);
+                                                                } else {
+                                                                    total_lines += formatted_sql.lines().count();
+                                                                }
+                                                                total_lines += 1; // separator
+                                                            }
+                                                            current_batch_sql.clear();
+                                                        } else {
+                                                            if !current_batch_sql.is_empty() {
+                                                                current_batch_sql.push('\n');
+                                                            }
+                                                            current_batch_sql.push_str(statement_line);
+                                                        }
+                                                    }
+                                                    // Final batch
+                                                    if !current_batch_sql.trim().is_empty() {
+                                                        total_lines += 1; // batch header
+                                                        let format_options = FormatOptions {
+                                                            indent: sqlformat::Indent::Spaces(2),
+                                                            uppercase: Some(false),
+                                                            lines_between_queries: 1,
+                                                            ignore_case_convert: Some(vec![]),
+                                                        };
+                                                        let formatted_sql = format(
+                                                            &current_batch_sql.trim(),
+                                                            &QueryParams::None,
+                                                            &format_options,
+                                                        );
+                                                        if formatted_sql.trim().is_empty() {
+                                                            total_lines += current_batch_sql.lines().count().max(1);
+                                                        } else {
+                                                            total_lines += formatted_sql.lines().count();
+                                                        }
+                                                    }
+                                                } else {
+                                                    // Regular statement
+                                                    let format_options = FormatOptions {
+                                                        indent: sqlformat::Indent::Spaces(2),
+                                                        uppercase: Some(false),
+                                                        lines_between_queries: 1,
+                                                        ignore_case_convert: Some(vec![]),
+                                                    };
+                                                    let formatted_sql = format(&message.statement, &QueryParams::None, &format_options);
+                                                    if formatted_sql.trim().is_empty() {
+                                                        total_lines += message.statement.lines().count().max(1);
+                                                    } else {
+                                                        total_lines += formatted_sql.lines().count();
+                                                    }
+                                                    total_lines += 1; // end statement marker
+                                                }
+
+                                                let current_cursor = scroll_cursors.get(&actual_index).cloned().unwrap_or(0);
+                                                let current_offset = scroll_offsets.get(&actual_index).cloned().unwrap_or(0);
+
+                                                // Move cursor down if not at the end
+                                                if current_cursor < total_lines.saturating_sub(1) {
+                                                    let new_cursor = current_cursor + 1;
+                                                    scroll_cursors.insert(actual_index, new_cursor);
+
+                                                    // Calculate dynamic expanded height
+                                                    let min_reserved_space = 5;
+                                                    let available_height = last_list_height.saturating_sub(4);
+                                                    let dynamic_max_expanded_height = available_height.saturating_sub(min_reserved_space).max(10);
+
+                                                    // Auto-scroll if cursor goes beyond visible area
+                                                    if new_cursor >= current_offset + dynamic_max_expanded_height {
+                                                        scroll_offsets.insert(actual_index, current_offset + 1);
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -310,120 +620,110 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 0 {
                                         let actual_index = selected - 1;
-                                        // Page down (Ctrl+d) - move cursor down by half a page
-                                        let current_cursor =
-                                            scroll_cursors.get(&actual_index).cloned().unwrap_or(0);
-                                        let current_offset =
-                                            scroll_offsets.get(&actual_index).cloned().unwrap_or(0);
-                                        let page_size = MAX_EXPANDED_HEIGHT / 2; // Half page like vim
+                                                                let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                                        let flat_items = create_flat_navigation_structure(&grouped_messages, &expanded_groups, &filter_text);
+                                        
+                                        if actual_index < flat_items.len() {
+                                            if let FlatNavigationItem::Message(message) = &flat_items[actual_index] {
+                                                // Page down (Ctrl+d) - move cursor down by half a page
+                                                let current_cursor =
+                                                    scroll_cursors.get(&actual_index).cloned().unwrap_or(0);
+                                                let current_offset =
+                                                    scroll_offsets.get(&actual_index).cloned().unwrap_or(0);
+                                                // Calculate dynamic expanded height
+                                                let min_reserved_space = 5;
+                                                let available_height = last_list_height.saturating_sub(4);
+                                                let dynamic_max_expanded_height = available_height.saturating_sub(min_reserved_space).max(10);
+                                                let page_size = dynamic_max_expanded_height / 2; // Half page like vim
 
-                                        // Use the same logic as the j/k scrolling to calculate total lines
-                                        if actual_index < log_lines.len() {
-                                            let line =
-                                                &log_lines[log_lines.len() - 1 - actual_index];
-                                            let mut total_lines = 0;
+                                                // Calculate total lines for this message
+                                                let mut total_lines = 0;
 
-                                            if line.statement.contains("[-- Batch Command") {
-                                                // Count batch processing lines
-                                                let mut current_batch_sql = String::new();
-                                                for statement_line in line.statement.lines() {
-                                                    if statement_line
-                                                        .starts_with("[-- Batch Command")
-                                                    {
-                                                        if !current_batch_sql.trim().is_empty() {
-                                                            total_lines += 1; // batch header
-                                                            let format_options = FormatOptions {
-                                                                indent: sqlformat::Indent::Spaces(
-                                                                    2,
-                                                                ),
-                                                                uppercase: Some(false),
-                                                                lines_between_queries: 1,
-                                                                ignore_case_convert: Some(vec![]),
-                                                            };
-                                                            let formatted_sql = format(
-                                                                &current_batch_sql.trim(),
-                                                                &QueryParams::None,
-                                                                &format_options,
-                                                            );
-                                                            if formatted_sql.trim().is_empty() {
-                                                                total_lines += current_batch_sql
-                                                                    .lines()
-                                                                    .count()
-                                                                    .max(1);
-                                                            } else {
-                                                                total_lines +=
-                                                                    formatted_sql.lines().count();
+                                                if message.statement.contains("[-- Batch Command") {
+                                                    // Count batch processing lines
+                                                    let mut current_batch_sql = String::new();
+                                                    for statement_line in message.statement.lines() {
+                                                        if statement_line.starts_with("[-- Batch Command") {
+                                                            if !current_batch_sql.trim().is_empty() {
+                                                                total_lines += 1; // batch header
+                                                                let format_options = FormatOptions {
+                                                                    indent: sqlformat::Indent::Spaces(2),
+                                                                    uppercase: Some(false),
+                                                                    lines_between_queries: 1,
+                                                                    ignore_case_convert: Some(vec![]),
+                                                                };
+                                                                let formatted_sql = format(
+                                                                    &current_batch_sql.trim(),
+                                                                    &QueryParams::None,
+                                                                    &format_options,
+                                                                );
+                                                                if formatted_sql.trim().is_empty() {
+                                                                    total_lines += current_batch_sql.lines().count().max(1);
+                                                                } else {
+                                                                    total_lines += formatted_sql.lines().count();
+                                                                }
+                                                                total_lines += 1; // separator
                                                             }
-                                                            total_lines += 1; // separator
+                                                            current_batch_sql.clear();
+                                                        } else {
+                                                            if !current_batch_sql.is_empty() {
+                                                                current_batch_sql.push('\n');
+                                                            }
+                                                            current_batch_sql.push_str(statement_line);
                                                         }
-                                                        current_batch_sql.clear();
-                                                    } else {
-                                                        if !current_batch_sql.is_empty() {
-                                                            current_batch_sql.push('\n');
-                                                        }
-                                                        current_batch_sql.push_str(statement_line);
                                                     }
-                                                }
-                                                // Final batch
-                                                if !current_batch_sql.trim().is_empty() {
-                                                    total_lines += 1; // batch header
+                                                    // Final batch
+                                                    if !current_batch_sql.trim().is_empty() {
+                                                        total_lines += 1; // batch header
+                                                        let format_options = FormatOptions {
+                                                            indent: sqlformat::Indent::Spaces(2),
+                                                            uppercase: Some(false),
+                                                            lines_between_queries: 1,
+                                                            ignore_case_convert: Some(vec![]),
+                                                        };
+                                                        let formatted_sql = format(
+                                                            &current_batch_sql.trim(),
+                                                            &QueryParams::None,
+                                                            &format_options,
+                                                        );
+                                                        if formatted_sql.trim().is_empty() {
+                                                            total_lines += current_batch_sql.lines().count().max(1);
+                                                        } else {
+                                                            total_lines += formatted_sql.lines().count();
+                                                        }
+                                                    }
+                                                } else {
+                                                    // Regular statement
                                                     let format_options = FormatOptions {
                                                         indent: sqlformat::Indent::Spaces(2),
                                                         uppercase: Some(false),
                                                         lines_between_queries: 1,
                                                         ignore_case_convert: Some(vec![]),
                                                     };
-                                                    let formatted_sql = format(
-                                                        &current_batch_sql.trim(),
-                                                        &QueryParams::None,
-                                                        &format_options,
-                                                    );
+                                                    let formatted_sql = format(&message.statement, &QueryParams::None, &format_options);
                                                     if formatted_sql.trim().is_empty() {
-                                                        total_lines += current_batch_sql
-                                                            .lines()
-                                                            .count()
-                                                            .max(1);
+                                                        total_lines += message.statement.lines().count().max(1);
                                                     } else {
-                                                        total_lines +=
-                                                            formatted_sql.lines().count();
+                                                        total_lines += formatted_sql.lines().count();
                                                     }
+                                                    total_lines += 1; // end statement marker
                                                 }
-                                            } else {
-                                                // Regular statement
-                                                let format_options = FormatOptions {
-                                                    indent: sqlformat::Indent::Spaces(2),
-                                                    uppercase: Some(false),
-                                                    lines_between_queries: 1,
-                                                    ignore_case_convert: Some(vec![]),
-                                                };
-                                                let formatted_sql = format(
-                                                    &line.statement,
-                                                    &QueryParams::None,
-                                                    &format_options,
+
+                                                // Move cursor down by half page
+                                                let new_cursor = std::cmp::min(
+                                                    current_cursor + page_size,
+                                                    total_lines.saturating_sub(1),
                                                 );
-                                                if formatted_sql.trim().is_empty() {
-                                                    total_lines +=
-                                                        line.statement.lines().count().max(1);
-                                                } else {
-                                                    total_lines += formatted_sql.lines().count();
+                                                scroll_cursors.insert(actual_index, new_cursor);
+
+                                                // Auto-scroll if cursor goes beyond visible area
+                                                if new_cursor >= current_offset + dynamic_max_expanded_height {
+                                                    let new_offset = std::cmp::min(
+                                                        current_offset + page_size,
+                                                        total_lines.saturating_sub(dynamic_max_expanded_height),
+                                                    );
+                                                    scroll_offsets.insert(actual_index, new_offset);
                                                 }
-                                                total_lines += 1; // end statement marker
-                                            }
-
-                                            // Move cursor down by half page
-                                            let new_cursor = std::cmp::min(
-                                                current_cursor + page_size,
-                                                total_lines.saturating_sub(1),
-                                            );
-                                            scroll_cursors.insert(actual_index, new_cursor);
-
-                                            // Auto-scroll if cursor goes beyond visible area
-                                            if new_cursor >= current_offset + MAX_EXPANDED_HEIGHT {
-                                                let new_offset = std::cmp::min(
-                                                    current_offset + page_size,
-                                                    total_lines.saturating_sub(MAX_EXPANDED_HEIGHT),
-                                                );
-                                                scroll_offsets.insert(actual_index, new_offset);
                                             }
                                         }
                                     }
@@ -440,7 +740,11 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                             scroll_cursors.get(&actual_index).cloned().unwrap_or(0);
                                         let current_offset =
                                             scroll_offsets.get(&actual_index).cloned().unwrap_or(0);
-                                        let page_size = MAX_EXPANDED_HEIGHT / 2; // Half page like vim
+                                        // Calculate dynamic expanded height
+                                        let min_reserved_space = 5;
+                                        let available_height = last_list_height.saturating_sub(4);
+                                        let dynamic_max_expanded_height = available_height.saturating_sub(min_reserved_space).max(10);
+                                        let page_size = dynamic_max_expanded_height / 2; // Half page like vim
 
                                         // Move cursor up by half page
                                         let new_cursor = current_cursor.saturating_sub(page_size);
@@ -459,46 +763,49 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 0 {
                                         let actual_index = selected - 1;
-                                        if actual_index < log_lines.len() {
-                                            let line =
-                                                &log_lines[log_lines.len() - 1 - actual_index];
-                                            let cursor_pos = scroll_cursors
-                                                .get(&actual_index)
-                                                .cloned()
-                                                .unwrap_or(0);
+                                        let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                                        let flat_items = create_flat_navigation_structure(&grouped_messages, &expanded_groups, &filter_text);
+                                        
+                                        if actual_index < flat_items.len() {
+                                            if let FlatNavigationItem::Message(message) = &flat_items[actual_index] {
+                                                let cursor_pos = scroll_cursors
+                                                    .get(&actual_index)
+                                                    .cloned()
+                                                    .unwrap_or(0);
 
-                                            let text_to_copy =
-                                                if line.statement.contains("[-- Batch Command") {
-                                                    format::extract_batch_statement_at_cursor(
-                                                        &line.statement,
-                                                        cursor_pos,
-                                                    )
-                                                } else {
-                                                    let format_options = FormatOptions {
-                                                        indent: sqlformat::Indent::Spaces(2),
-                                                        uppercase: Some(false),
-                                                        lines_between_queries: 1,
-                                                        ignore_case_convert: Some(vec![]),
-                                                    };
-                                                    let formatted_sql = format(
-                                                        &line.statement,
-                                                        &QueryParams::None,
-                                                        &format_options,
-                                                    );
-                                                    if formatted_sql.trim().is_empty() {
-                                                        line.statement.clone()
+                                                let text_to_copy =
+                                                    if message.statement.contains("[-- Batch Command") {
+                                                        format::extract_batch_statement_at_cursor(
+                                                            &message.statement,
+                                                            cursor_pos,
+                                                        )
                                                     } else {
-                                                        formatted_sql
-                                                    }
-                                                };
+                                                        let format_options = FormatOptions {
+                                                            indent: sqlformat::Indent::Spaces(2),
+                                                            uppercase: Some(false),
+                                                            lines_between_queries: 1,
+                                                            ignore_case_convert: Some(vec![]),
+                                                        };
+                                                        let formatted_sql = format(
+                                                            &message.statement,
+                                                            &QueryParams::None,
+                                                            &format_options,
+                                                        );
+                                                        if formatted_sql.trim().is_empty() {
+                                                            message.statement.clone()
+                                                        } else {
+                                                            formatted_sql
+                                                        }
+                                                    };
 
-                                            if let Some(ref mut cb) = clipboard {
-                                                if cb.set_text(text_to_copy).is_ok() {
-                                                    // Flash the indicator on the correct item (use actual_index for rendering)
-                                                    copy_flash_state = Some((
-                                                        actual_index,
-                                                        std::time::Instant::now(),
-                                                    ));
+                                                if let Some(ref mut cb) = clipboard {
+                                                    if cb.set_text(text_to_copy).is_ok() {
+                                                        // Flash the indicator on the correct item (use actual_index for rendering)
+                                                        copy_flash_state = Some((
+                                                            actual_index,
+                                                            std::time::Instant::now(),
+                                                        ));
+                                                    }
                                                 }
                                             }
                                         }
@@ -541,13 +848,14 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                 }
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                let filtered_lines = filter_log_lines(&log_lines, &filter_text);
+                                let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                                let total_items = count_total_rendered_items(&grouped_messages, &expanded_groups, &filter_text);
                                 if let Some(selected) = list_state.selected() {
-                                    if selected < filtered_lines.len() {
+                                    if selected < total_items {
                                         // Account for padding line
                                         list_state.select(Some(selected + 1));
                                     }
-                                } else if !filtered_lines.is_empty() {
+                                } else if total_items > 0 {
                                     list_state.select(Some(1)); // Start at index 1 (first actual item)
                                 }
                             }
@@ -584,20 +892,29 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                             KeyCode::Enter => {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 0 {
-                                        let actual_index = selected - 1; // Convert to actual log index
-                                        let filtered_lines =
-                                            filter_log_lines(&log_lines, &filter_text);
-                                        if actual_index < filtered_lines.len() {
-                                            if let Some(uid) = &filtered_lines
-                                                [filtered_lines.len() - 1 - actual_index]
-                                                .uid
-                                            {
-                                                if expanded_uids.contains(uid) {
-                                                    // Collapse the accordion
-                                                    expanded_uids.remove(uid);
-                                                } else {
-                                                    // Expand the accordion
-                                                    expanded_uids.insert(uid.clone());
+                                        let actual_index = selected - 1; // Convert to actual navigation index
+                                        let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                                        let flat_items = create_flat_navigation_structure(&grouped_messages, &expanded_groups, &filter_text);
+                                        
+                                        if actual_index < flat_items.len() {
+                                            match &flat_items[actual_index] {
+                                                FlatNavigationItem::GroupHeader(group) => {
+                                                    // Toggle group expansion
+                                                    if expanded_groups.contains(group) {
+                                                        expanded_groups.remove(group);
+                                                    } else {
+                                                        expanded_groups.insert(group.clone());
+                                                    }
+                                                }
+                                                FlatNavigationItem::Message(message) => {
+                                                    // Toggle individual message expansion
+                                                    if let Some(uid) = &message.uid {
+                                                        if expanded_uids.contains(uid) {
+                                                            expanded_uids.remove(uid);
+                                                        } else {
+                                                            expanded_uids.insert(uid.clone());
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -608,18 +925,58 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                 if let Some(selected) = list_state.selected() {
                                     if selected > 0 {
                                         let actual_index = selected - 1;
-                                        let filtered_lines =
-                                            filter_log_lines(&log_lines, &filter_text);
-                                        if actual_index < filtered_lines.len() {
-                                            if let Some(uid) = &filtered_lines
-                                                [filtered_lines.len() - 1 - actual_index]
-                                                .uid
-                                            {
-                                                if expanded_uids.contains(uid) {
-                                                    scroll_mode = true;
-                                                    // Always reset scroll position when entering scroll mode
-                                                    scroll_offsets.insert(actual_index, 0);
-                                                    scroll_cursors.insert(actual_index, 0);
+                                        let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                                        let flat_items = create_flat_navigation_structure(&grouped_messages, &expanded_groups, &filter_text);
+                                        
+                                        if actual_index < flat_items.len() {
+                                            if let FlatNavigationItem::Message(message) = &flat_items[actual_index] {
+                                                if let Some(uid) = &message.uid {
+                                                    if expanded_uids.contains(uid) {
+                                                        scroll_mode = true;
+                                                        // Always reset scroll position when entering scroll mode
+                                                        scroll_offsets.insert(actual_index, 0);
+                                                        scroll_cursors.insert(actual_index, 0);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Char('h') => {
+                                help_screen_visible = true;
+                            }
+                            KeyCode::Char('t') => {
+                                if let Some(selected) = list_state.selected() {
+                                    if selected > 0 {
+                                        let actual_index = selected - 1;
+                                        let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                                        let flat_items = create_flat_navigation_structure(&grouped_messages, &expanded_groups, &filter_text);
+                                        
+                                        if actual_index < flat_items.len() {
+                                            if let FlatNavigationItem::GroupHeader(group) = &flat_items[actual_index] {
+                                                // Capture the group we're toggling
+                                                let target_group = group.clone();
+                                                
+                                                // Toggle pin status for the selected group
+                                                if pinned_groups.contains(group) {
+                                                    pinned_groups.remove(group);
+                                                } else {
+                                                    pinned_groups.insert(group.clone());
+                                                }
+                                                
+                                                // After toggling, find where this group ended up and restore selection
+                                                let updated_grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
+                                                let updated_flat_items = create_flat_navigation_structure(&updated_grouped_messages, &expanded_groups, &filter_text);
+                                                
+                                                // Find the new position of the target group
+                                                for (new_index, item) in updated_flat_items.iter().enumerate() {
+                                                    if let FlatNavigationItem::GroupHeader(updated_group) = item {
+                                                        if *updated_group == target_group {
+                                                            list_state.select(Some(new_index + 1)); // +1 for padding line
+                                                            break;
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -730,4 +1087,84 @@ fn filter_log_lines<'a>(
             method_match || endpoint_match || caller_class_match || caller_method_match
         })
         .collect()
+}
+
+// Represents a flattened navigation item (either a group header or individual message)
+#[derive(Clone, Debug)]
+enum FlatNavigationItem<'a> {
+    GroupHeader(RequestGroup),
+    Message(&'a SqlLogMessage),
+}
+
+// Create a flattened navigation structure for the grouped messages
+fn create_flat_navigation_structure<'a>(
+    grouped_messages: &'a GroupedLogMessages,
+    expanded_groups: &std::collections::HashSet<RequestGroup>,
+    filter_text: &str,
+) -> Vec<FlatNavigationItem<'a>> {
+    let mut flat_items = Vec::new();
+    
+    for (group, messages) in &grouped_messages.groups {
+        // Filter messages within the group
+        let filtered_messages: Vec<&SqlLogMessage> = if filter_text.is_empty() {
+            messages.iter().collect()
+        } else {
+            messages.iter().filter(|msg| {
+                let method_match = if msg.http_method.is_none() {
+                    "CALL".to_lowercase().contains(&filter_text.to_lowercase())
+                } else {
+                    msg.http_method
+                        .as_ref()
+                        .map_or(false, |method| method.to_lowercase().contains(&filter_text.to_lowercase()))
+                };
+
+                let endpoint_match = msg
+                    .endpoint
+                    .as_ref()
+                    .map_or(false, |endpoint| endpoint.to_lowercase().contains(&filter_text.to_lowercase()));
+
+                let caller_class_match = msg
+                    .caller_class
+                    .as_ref()
+                    .map_or(false, |class| class.to_lowercase().contains(&filter_text.to_lowercase()));
+
+                let caller_method_match = msg
+                    .caller_method
+                    .as_ref()
+                    .map_or(false, |method| method.to_lowercase().contains(&filter_text.to_lowercase()));
+
+                method_match || endpoint_match || caller_class_match || caller_method_match
+            }).collect()
+        };
+        
+        // Skip groups with no matching messages
+        if filtered_messages.is_empty() {
+            continue;
+        }
+        
+        // Add group header
+        flat_items.push(FlatNavigationItem::GroupHeader(group.clone()));
+        
+        // If group is expanded, add individual messages
+        if expanded_groups.contains(group) {
+            // Sort messages by timestamp (most recent first)
+            let mut sorted_messages = filtered_messages;
+            sorted_messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            
+            for message in sorted_messages {
+                flat_items.push(FlatNavigationItem::Message(message));
+            }
+        }
+    }
+    
+    flat_items
+}
+
+// Count total rendered items in grouped structure for navigation
+fn count_total_rendered_items(
+    grouped_messages: &GroupedLogMessages,
+    expanded_groups: &std::collections::HashSet<RequestGroup>,
+    filter_text: &str,
+) -> usize {
+    create_flat_navigation_structure(grouped_messages, expanded_groups, filter_text).len()
 }

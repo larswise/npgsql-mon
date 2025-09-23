@@ -14,3 +14,4 @@ sqlformat = "0.3.5"
 syntect = "5.0"
 regex = "1.10"
 arboard = "3.4"
+chrono = { version = "0.4", features = ["serde"] }
