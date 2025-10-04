@@ -35,5 +35,6 @@ The NpgsqlLogger package (available at https://github.com/larswise/NpgsqlTcpLogg
 - `l` - Enter scroll mode for long queries
 - `h` - Exit scroll mode
 - `y` - Copy current query to clipboard
+- `c` - Clear screen (remove all log entries)
 - `Ctrl+d/u` - Page down/up navigation
 - `q` - Quit the application

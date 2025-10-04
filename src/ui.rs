@@ -6,7 +6,7 @@ use chrono::{DateTime, Local, Utc};
 
 use crate::{
     SqlLogMessage, RequestGroup, GroupedLogMessages,
-    format::{classify_sql_size, highlight_sql, sql_size_color},
+    format::{classify_sql_size, highlight_sql, sql_size_color, detect_query_badge},
 };
 
 // Helper function to extract HH:MM:SS from timestamp and convert to local time
@@ -49,6 +49,7 @@ pub fn render_header_row(
     sql_len: usize,
     sql_color: Color,
     time_str: &str,
+    sql_statement: &str,
     is_flashing: bool,
     flash_bg: Color,
     flash_fg: Color,
@@ -85,7 +86,34 @@ pub fn render_header_row(
             Style::default().bg(Color::Rgb(100, 100, 100)).fg(Color::White)
         },
     ));
-    let used_width = arrow_duration_text.len() + char_count_text.len() + time_text.len();
+
+    let mut used_width = arrow_duration_text.len() + char_count_text.len() + time_text.len();
+
+    // Add query badge if applicable
+    if let Some(badge) = detect_query_badge(sql_statement) {
+        // Add spacing before badge
+        header_spans.push(Span::styled(
+            "  ",
+            if is_flashing {
+                Style::default().bg(flash_bg).fg(flash_fg)
+            } else {
+                Style::default().bg(Color::Black)
+            },
+        ));
+
+        // Make badge more compact and less prominent
+        let badge_text = format!("{}", badge.label);
+        header_spans.push(Span::styled(
+            badge_text.clone(),
+            if is_flashing {
+                Style::default().bg(flash_bg).fg(flash_fg)
+            } else {
+                Style::default().bg(badge.bg_color).fg(badge.text_color)
+            },
+        ));
+        used_width += 2 + badge_text.len(); // 2 for spacing + badge text
+    }
+
     if used_width < width {
         let remaining_space = " ".repeat(width - used_width);
         header_spans.push(Span::styled(
@@ -325,6 +353,7 @@ pub fn render_accordion_item(
             sql_len,
             sql_color,
             &time_str,
+            &line.statement,
             is_flashing,
             flash_bg,
             flash_fg,
@@ -529,6 +558,7 @@ pub fn render_accordion_item(
             sql_len,
             sql_color,
             &time_str,
+            &line.statement,
             is_flashing,
             flash_bg,
             flash_fg,

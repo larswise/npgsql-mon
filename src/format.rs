@@ -166,3 +166,60 @@ pub fn sql_size_color(class: SqlSizeClass) -> Color {
         SqlSizeClass::Abomination => Color::Rgb(186, 48, 255), // Vivid Purple
     }
 }
+
+/// Represents a query type badge with styling information
+#[derive(Debug, Clone)]
+pub struct QueryBadge {
+    pub label: String,
+    pub bg_color: Color,
+    pub text_color: Color,
+}
+
+/// Detects the query type from SQL statement and returns appropriate badge
+pub fn detect_query_badge(sql: &str) -> Option<QueryBadge> {
+    let sql_trimmed = sql.trim().to_lowercase();
+
+    // Skip empty or whitespace-only queries
+    if sql_trimmed.is_empty() {
+        return None;
+    }
+
+    // Count queries (only for COUNT(*) or similar count queries)
+    if sql_trimmed.starts_with("select") && (sql_trimmed.contains("count(") || sql_trimmed.contains("count (")) {
+        return Some(QueryBadge {
+            label: "COUNT".to_string(),
+            bg_color: Color::Rgb(245, 222, 179), // Beige
+            text_color: Color::Black,
+        });
+    }
+
+    // Update queries
+    if sql_trimmed.starts_with("update") {
+        return Some(QueryBadge {
+            label: "UPDATE".to_string(),
+            bg_color: Color::Rgb(0, 128, 0), // Dark green
+            text_color: Color::White,
+        });
+    }
+
+    // Insert queries
+    if sql_trimmed.starts_with("insert") {
+        return Some(QueryBadge {
+            label: "INSERT".to_string(),
+            bg_color: Color::Rgb(50, 205, 50), // Lime green
+            text_color: Color::Black,
+        });
+    }
+
+    // Delete queries
+    if sql_trimmed.starts_with("delete") {
+        return Some(QueryBadge {
+            label: "DELETE".to_string(),
+            bg_color: Color::Rgb(255, 0, 0), // Red
+            text_color: Color::White,
+        });
+    }
+
+    // No badge for SELECT queries (too common) or unrecognized queries
+    None
+}

@@ -952,23 +952,23 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                         let actual_index = selected - 1;
                                         let grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
                                         let flat_items = create_flat_navigation_structure(&grouped_messages, &expanded_groups, &filter_text);
-                                        
+
                                         if actual_index < flat_items.len() {
                                             if let FlatNavigationItem::GroupHeader(group) = &flat_items[actual_index] {
                                                 // Capture the group we're toggling
                                                 let target_group = group.clone();
-                                                
+
                                                 // Toggle pin status for the selected group
                                                 if pinned_groups.contains(group) {
                                                     pinned_groups.remove(group);
                                                 } else {
                                                     pinned_groups.insert(group.clone());
                                                 }
-                                                
+
                                                 // After toggling, find where this group ended up and restore selection
                                                 let updated_grouped_messages = GroupedLogMessages::from_messages(&log_lines, &pinned_groups);
                                                 let updated_flat_items = create_flat_navigation_structure(&updated_grouped_messages, &expanded_groups, &filter_text);
-                                                
+
                                                 // Find the new position of the target group
                                                 for (new_index, item) in updated_flat_items.iter().enumerate() {
                                                     if let FlatNavigationItem::GroupHeader(updated_group) = item {
@@ -982,6 +982,17 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                                         }
                                     }
                                 }
+                            }
+                            KeyCode::Char('c') => {
+                                // Clear all log entries for a clean slate
+                                log_lines.clear();
+                                expanded_uids.clear();
+                                expanded_groups.clear();
+                                scroll_offsets.clear();
+                                scroll_cursors.clear();
+                                selected_uid = None;
+                                list_state.select(Some(1)); // Reset selection to first position
+                                main_scroll_offset = 0;
                             }
                             _ => {}
                         }
