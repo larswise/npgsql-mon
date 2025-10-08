@@ -22,12 +22,12 @@ jobs:
       - name: Prepare binary
         run: |
           mkdir -p dist
-          cp target/release/npgsql-mon dist/npgsql-mon-linux
+          cp target/release/pgquerymon dist/pgquerymon-linux
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: npgsql-mon-linux
-          path: dist/npgsql-mon-linux
+          name: pgquerymon-linux
+          path: dist/pgquerymon-linux
 
   build-windows:
     name: Build Windows
@@ -45,13 +45,13 @@ jobs:
       - name: Prepare binary
         run: |
           mkdir dist
-          copy target\release\npgsql-mon.exe dist\npgsql-mon-windows.exe
+          copy target\release\pgquerymon.exe dist\pgquerymon-windows.exe
         shell: pwsh
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: npgsql-mon-windows.exe
-          path: dist/npgsql-mon-windows.exe
+          name: pgquerymon-windows.exe
+          path: dist/pgquerymon-windows.exe
 
   upload-release:
     name: Upload Release Assets
@@ -61,12 +61,12 @@ jobs:
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
         with:
-          name: npgsql-mon-linux
+          name: pgquerymon-linux
           path: dist
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: npgsql-mon-windows.exe
+          name: pgquerymon-windows.exe
           path: dist
       - name: Upload release asset
         uses: softprops/action-gh-release@v1
