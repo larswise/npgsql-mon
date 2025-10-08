@@ -434,7 +434,7 @@ fn run_tui(rx: mpsc::Receiver<String>) -> anyhow::Result<()> {
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(Style::default().fg(Color::Rgb(0, 149, 255))) // #0095ff
-                            .title(" Npgsql monitor ")
+                            .title(" Postgresql query monitor ")
                             .title_style(Style::default().fg(Color::White)),
                     )
                     .highlight_style(Style::default())

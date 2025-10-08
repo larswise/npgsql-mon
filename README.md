@@ -1,4 +1,4 @@
-# Npgsql Monitor
+# Pgquerymon - Postgresql Query Profiler
 
 A sleek terminal-based monitoring tool for PostgreSQL queries executed through Npgsql in .NET applications. Npgsql Monitor provides real-time SQL query visualization with syntax highlighting, performance metrics, and an intuitive accordion-style interface for detailed query inspection.
 
@@ -25,7 +25,7 @@ The NpgsqlLogger package (available at https://github.com/larswise/NpgsqlTcpLogg
 
 1. Install the NpgsqlLogger package in your .NET application
 2. Configure the logger to send queries to `localhost:6000`
-3. Run `npgsql-mon` to start the monitoring interface
+3. Run `pgquerymon` to start the monitoring interface
 4. Execute queries in your application and watch them appear in real-time
 
 ## Keybindings
